@@ -173,26 +173,63 @@ bun scripts/dist.ts all --overwrite
   git worktree remove /tmp/browse-rollback
   ```
 
-## 4. Upstream sync procedure (run after every merge)
+## 4. Upstream sync procedure (preserve every fork feature & fix)
 
-1. **Merge, don't rebase-publish:**
-   ```sh
-   git fetch upstream
-   git merge upstream/dev        # or rebase your fork commits onto upstream/dev
-   ```
-   Keep the fork's changes in a **small number of well-scoped commits** (e.g. one
-   `fork: rebrand to sjseo298` commit, one per feature) so the fork patch stays easy to re-apply:
-   `git diff upstream/dev...dev` must show only intended fork changes.
-2. **Conflict policy:** upstream wins for *logic* (protocol, tools, relay); the fork wins for
-   *branding* (URLs, names, docs, workflows, store). When a file contains both, take upstream's
-   content and re-apply the rebranding (next step).
-3. **Re-apply the rebranding** (§5) to every file it lists. After a merge, upstream has very
-   likely re-introduced `anomalyco`/`anoma.ly`/`@opencode/browse`/`opencode.ai` references in
-   exactly those files.
-4. **Run the rebrand audit** (§5, last command). It must report nothing new.
-5. **Run the tests:** `bun run typecheck && bun test ./test` and `cd rust && cargo test`.
-6. **Do not** run the upstream release workflow, publish to Anomaly's release service, npm
-   scope, or CWS item. The fork's release infra is sjseo298's (or absent, for local-only use).
+**Never merge blindly.** The fork carries both **branding** and **behavioral/infrastructure logic** that MUST survive every upstream sync (`git diff upstream/dev...dev` is the ground truth of everything the fork owns).
+
+### Step 1 — Pre-merge safety
+
+```sh
+git status --short                               # must be clean
+git branch backup/pre-sync-$(date +%Y%m%d)       # local safety snapshot
+git fetch upstream
+git log --oneline dev..upstream/dev              # inspect incoming upstream changes first
+```
+
+### Step 2 — Merge (do not rebase-publish)
+
+```sh
+git merge upstream/dev
+```
+
+### Step 3 — Conflict & preservation matrix (what wins where)
+
+The old rule *"upstream wins for logic"* applies **ONLY** to core browser-automation logic (`browse-page`, `browse-capture`, `browse-script`, CDP/stealth/WebSocket protocol, extension UI/background features) — **NEVER** to the fork's distribution, detection, or Chrome-launch logic listed below:
+
+| Area / Files | What to keep (**Fork wins**) | What to take from **Upstream** |
+| --- | --- | --- |
+| **Fork-only files** (`AGENTS.md`, `scripts/dist.ts`, `test/dist-retention.test.ts`, `changelog/<fork>.md`) | Always keep ours (`git checkout --ours` if needed). | — |
+| **Deleted upstream CWS files** (`store/*`, `scripts/cws-auth.ts`) | Keep **deleted** (`git rm -f store/* scripts/cws-auth.ts` on modify/delete conflicts). | Ignore any upstream CWS updates unless sjseo298 creates a CWS item. |
+| **Extension manifest & title** (`public/manifest.json`, `src/background/index.ts`) | Keep `"name": "sjseo298 Browse"`, `default_title`, tab title, and the **`key`** (pins `afeafocngkodbmaipcngoamamfmekgfo`). | Accept upstream permissions, `minimum_chrome_version`, icons, or `version` bump (aligned per §3a). |
+| **Fork extension install & Chrome launch** (`rust/crates/browse/src/{browsers.rs,setup.rs}`, `rust/crates/browse-relay/src/browser.rs`) | Preserve `extension_url()` (`https://github.com/sjseo298/browse/releases/latest`), `open_chromium()` (never `open_default()` / Safari), `detect()` + `pair_in_browser()` checking `UNPACKED_EXTENSION_ID` (`afeafocngkodbmaipcngoamamfmekgfo`) + `STORE_ID`, and Chrome + Load unpacked guidance (§5 #20). | Merge new Chromium browser entries, profile parsing, or pairing code logic from upstream. |
+| **Install detection & npm scope** (`rust/crates/browse/src/method.rs`, `cli/src/setup/mcp.ts`, `cli/script/compile.ts`, `rust/crates/browse/tests/package_update.rs`) | Preserve dual-scope detection (`@sjseo298` \|\| `@opencode`) and `--@sjseo298:registry` (§5 #17). | Merge new package manager layouts/fixes from upstream, then re-apply dual-scope if touched. |
+| **Installers** (`install`, `install.ps1`) | Preserve fork service/install URLs, `@sjseo298/browse`, and **absolute `https://` URL support** in manifest downloads (§5 #4, #18). | Merge new OS/arch/shell fixes from upstream while keeping the `https://` branch. |
+| **Branding & endpoints** (`update.rs:33`, `paths.ts:270`, `agents.rs`, `README.md`, `RELEASING.md`, `package.json` files, `CODEOWNERS`) | Re-apply every row of **§5 Rebranding map** (`sjseo298.github.io/browse/release`, `@sjseo298/browse`, `github.com/sjseo298/opencode`). | Merge upstream docs/features around the fork URLs. |
+| **Version bump files** (`package.json`, `cli/package.json`, `public/manifest.json`, `rust/Cargo.toml`, `rust/Cargo.lock`) | Keep aligned with `upstream`'s new version if `upstream > fork` (never jump ahead with fork-only numbers). After resolving conflicts, run `bun scripts/version.ts set <target-version>` so all 5 files + `Cargo.lock` agree, and keep `public/manifest.json`'s `"name"` and `"key"`. | Take upstream's new release version on upstream syncs. |
+| **Core automation & protocol** (`src/*`, `rust/crates/browse-{core,page,capture,script}`, `rust/crates/browse-relay` except `browser.rs:306`, `cli/src/update/release-service.ts`) | Keep §6 contracts intact. | **Upstream wins** for bugfixes, new MCP tools, CDP/stealth improvements, and protocol updates. |
+
+### Step 4 — Mandatory post-merge audits (both must be clean)
+
+1. Run the **Rebrand audit** (§5) — confirms no `anomalyco`/`anoma.ly`/`@opencode/browse`/`opencode.ai` leaked back in outside the allowlist.
+2. Run the **Fork integrity audit** (§5) — confirms `chromewebstore.google.com`, `open_default`, `"OpenCode Browse"`, and `store/`/`scripts/cws-auth.ts` did not sneak back in, and that `scripts/dist.ts` + dual-scope detection in `method.rs` + `https://` support in `install`/`install.ps1` are still present.
+
+### Step 5 — Test, rebuild, and optionally republish
+
+```sh
+bun install --frozen-lockfile
+bun run typecheck
+bun test ./test
+bun test ./cli/test/install-integrity.test.ts ./cli/test/release-vectors.test.ts
+source "$HOME/.cargo/env" && (cd rust && cargo test --workspace --locked -- --test-threads=1)
+bun run build                 # rebuild dist/ unpacked extension for Chrome
+git diff upstream/dev...dev --stat   # verify fork delta matches only intended changes
+```
+
+- **Publish synced build** (per §3a):
+  - If upstream bumped to a new version `<V>` (`v<V>`): commit the merge, `git tag v<V> && git push origin dev v<V>`, and run `bun scripts/dist.ts all` (auto-prunes older releases keeping the latest 2).
+  - If upstream had commits without a version bump: push `origin dev` and run `bun scripts/dist.ts all --overwrite` to update the current release.
+- **Do not** run `.github/workflows/release.yml`, publish to Anomaly's release service, npm scope, or CWS item.
+- Once verified, delete the temporary backup branch: `git branch -d backup/pre-sync-YYYYMMDD`.
 
 ## 5. Rebranding map (the fork patch — re-apply after every upstream merge)
 
@@ -258,6 +295,21 @@ Allowed residuals (update this list and this grep together if you change the reb
 6. `dist/` — build output (rebuilt from the rebranded sources).
 
 Anything else is a merge that lost the fork patch — fix it before committing.
+
+### Fork integrity audit (must also pass after every merge)
+
+```sh
+# 1) No Chrome Web Store URLs, open_default() Safari launches, or upstream extension title in runtime code:
+grep -rn "chromewebstore\.google\.com\|open_default\|OpenCode Browse" \
+  rust/crates/ src/ public/ install install.ps1 | grep -v "browsers.rs:.*assert!"
+# 2) Deleted upstream CWS assets did not resurrect:
+test ! -d store && test ! -f scripts/cws-auth.ts && echo "NO-CWS-OK"
+# 3) Critical fork features are still intact:
+test -f scripts/dist.ts && grep -q "UNPACKED_EXTENSION_ID" rust/crates/browse/src/browsers.rs \
+  && grep -q "@sjseo298" rust/crates/browse/src/method.rs \
+  && grep -q "https://\*)" install && grep -q 'StartsWith("https://")' install.ps1 \
+  && echo "FORK-FEATURES-OK"
+```
 
 ## 6. Upstream contracts — never break these
 

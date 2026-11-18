@@ -28,7 +28,7 @@ Anomaly's OIDC release service, AWS secrets, npm trusted publishing, and Chrome 
 
 ## Cutting a fork release (aligned with upstream + local build + retention of 2 releases)
 
-**Version rule:** Keep versions aligned with `upstream` (`anomalyco/browse`). Do **not** bump `0.1.x` for fork-only
+**Version rule:** Keep versions aligned with `upstream`. Do **not** bump `0.1.x` for fork-only
 fixes — commit the fix to `dev` and use `bun scripts/dist.ts all --overwrite` on the current version instead. Only bump
 the version when aligning with a new upstream release (or when explicitly needed for auto-update).
 
@@ -37,7 +37,9 @@ See [AGENTS.md §3a](AGENTS.md#3a-publishing-fork-distributions-agent-playbook) 
 1. **Bump version & write changelog:** `bun scripts/version.ts set <version>` (updates `cli/package.json`, `package.json`,
    `public/manifest.json`, `rust/Cargo.toml`, `rust/Cargo.lock`) and create `changelog/<version>.md`.
 2. **Run checks:** `bun run typecheck`, `bun test ./test`, `(cd rust && cargo test --workspace --locked -- --test-threads=1)`,
-   and the rebrand audit (`AGENTS.md §5`).
+   and both audits in `AGENTS.md §5` (rebrand audit + fork integrity audit).
+   *(When publishing after an `upstream/dev` merge, follow [AGENTS.md §4](AGENTS.md#4-upstream-sync-procedure-preserve-every-fork-feature--fix)
+   first so dual-scope detection, Chrome-only unpacked setup, `https://` installers, `scripts/dist.ts`, and deleted `store/`/`scripts/cws-auth.ts` stay preserved.)*
 3. **Commit, tag, and push:** `git commit -m "release: v<version>" && git tag v<version> && git push origin dev v<version>`.
 4. **Build, validate, publish, and prune:** `bun scripts/dist.ts all`
    - Compiles macOS targets (`darwin-arm64`, `darwin-x64`, `darwin-x64-baseline`), builds the unpacked extension zip
