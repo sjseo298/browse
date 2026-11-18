@@ -26,7 +26,11 @@ In this fork (`sjseo298/browse`), **releases are built and published 100% locall
 [scripts/dist.ts](scripts/dist.ts) — do **not** run upstream's `.github/workflows/release.yml` (which targets
 Anomaly's OIDC release service, AWS secrets, npm trusted publishing, and Chrome Web Store). Work lands on `dev`.
 
-## Cutting a fork release (local build + retention of 2 releases)
+## Cutting a fork release (aligned with upstream + local build + retention of 2 releases)
+
+**Version rule:** Keep versions aligned with `upstream` (`anomalyco/browse`). Do **not** bump `0.1.x` for fork-only
+fixes — commit the fix to `dev` and use `bun scripts/dist.ts all --overwrite` on the current version instead. Only bump
+the version when aligning with a new upstream release (or when explicitly needed for auto-update).
 
 See [AGENTS.md §3a](AGENTS.md#3a-publishing-fork-distributions-agent-playbook) for the full agent playbook. Summary:
 

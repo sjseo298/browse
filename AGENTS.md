@@ -91,6 +91,7 @@ see §5 before running install-mode commands).
 ### 3a. Publishing fork distributions (agent playbook)
 
 **Distribution model (100% local compilation, no GitHub Actions):**
+- **Version alignment policy (CRITICAL):** Keep fork versions **aligned with `upstream`** (`anomalyco/browse`). Do **NOT** bump `0.1.x` versions for fork-only fixes or minor tweaks! Only bump the version when syncing a new `upstream` release (to match or stay aligned with upstream). For fork fixes between upstream releases, **overwrite the current release** with `bun scripts/dist.ts all --overwrite` instead of inventing new patch numbers.
 - **Binaries + unpacked extension zip** → **GitHub Releases** (`sjseo298/browse`, tag `v<version>`).
 - **Channel manifest + install scripts** → **`gh-pages` branch** (`https://sjseo298.github.io/browse/release/browse/cli/<channel>.json`, `install`, `install.ps1`).
 - **Retention policy (max 2 distributions):** Keep ONLY the **2 latest GitHub Releases** (the most recent + the immediately previous one) and matching local `release/dist-<version>` folders. `scripts/dist.ts publish` / `all` enforces `--keep 2` automatically (and `bun scripts/dist.ts prune --keep 2` runs it standalone). `gh-pages` only ever stores the current active manifest + installers.
@@ -101,7 +102,9 @@ see §5 before running install-mode commands).
 3. On Apple Silicon macOS, `scripts/dist.ts` builds `darwin-arm64`, `darwin-x64`, and `darwin-x64-baseline` by default (`linux-x64` / `windows-x64` are omitted unless cross-built locally and passed via `--target`).
 4. Extension zip (`browse-extension-<version>.zip`) intentionally preserves `manifest.key` so unpacked Chrome installs receive the trusted extension ID.
 
-#### A. Publishing a new version (recommended)
+#### A. Publishing a new version (aligned with upstream)
+
+Only cut a new `v<V>` when syncing an upstream release (or when a genuine version bump is explicitly requested by the user):
 
 ```sh
 # 1) Check current version and existing releases
@@ -136,9 +139,9 @@ curl -fsS https://sjseo298.github.io/browse/release/browse/cli/stable.json
 curl -fsS https://sjseo298.github.io/browse/install | head -5
 ```
 
-#### B. Overwriting the latest release (`--overwrite`)
+#### B. Overwriting the latest release (`--overwrite` — default for fork fixes)
 
-Use `--overwrite` **only** when the user explicitly wants to replace the **latest** published release (e.g. a quick fix on `dev` without bumping the version number):
+Use `--overwrite` whenever applying a fork fix without changing the upstream-aligned version number:
 
 ```sh
 # 1) Commit your fix on dev and push (tracked files must be clean)
