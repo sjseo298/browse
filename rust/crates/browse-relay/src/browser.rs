@@ -302,10 +302,9 @@ impl Relay {
                 Some("The paired browser is reconnecting; try again in a few seconds.".into())
             }
             "paired-offline" => Some("The paired browser isn't connected right now: open it (the profile with browse) and check that the extension is turned on. It reconnects by itself.".into()),
-            _ => Some(format!(
-                "No browser has connected to browse yet. Add the browse extension from https://chromewebstore.google.com/detail/{} (if it's already added, open that browser), then run `browse install` to pair it, or `browse pair` for a code to enter in the extension.",
-                protocol::store_id()
-            )),
+            _ => Some(
+                "No browser has connected to browse yet. Open Google Chrome (or another Chromium-based browser — Safari is not supported), download browse-extension-<version>.zip from https://github.com/sjseo298/browse/releases/latest, unzip it, load it unpacked in chrome://extensions (Developer mode), and then run `browse install` or `browse pair` to connect it.".into(),
+            ),
         };
         let browsers: Vec<Value> = st
             .links

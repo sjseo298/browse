@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::setup::home;
 
 pub const STORE_ID: &str = "mfnicocicmmlkpjnaffgihfjhdgjkdjg";
+pub const EXTENSION_RELEASE_URL: &str = "https://github.com/sjseo298/browse/releases/latest";
 
 pub fn store_id() -> String {
     std::env::var("OPENCODE_BROWSER_STORE_ID")
@@ -17,8 +18,13 @@ pub fn store_id() -> String {
         .unwrap_or_else(|| STORE_ID.into())
 }
 
-pub fn store_url() -> String {
-    format!("https://chromewebstore.google.com/detail/{}", store_id())
+/// Fork extension download page (GitHub Releases with unpacked `browse-extension-<version>.zip`).
+pub fn extension_url() -> String {
+    std::env::var("OPENCODE_BROWSER_EXTENSION_URL")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| s.starts_with("https://"))
+        .unwrap_or_else(|| EXTENSION_RELEASE_URL.to_owned())
 }
 
 pub struct Browser {
@@ -32,6 +38,7 @@ pub struct Match {
     pub browser: usize,
     pub profile: String,
     pub profile_name: String,
+    pub extension_id: String,
     pub enabled: bool,
 }
 
@@ -93,9 +100,11 @@ fn read_json(file: &Path) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(file).ok()?).ok()
 }
 
-/// Every profile, in every browser here, that has the store extension.
+/// Every profile, in every browser here, that has the fork's unpacked extension or store extension.
 pub fn detect(browsers: &[Browser]) -> Vec<Match> {
-    let id = store_id();
+    let unpacked = browse_relay::protocol::UNPACKED_EXTENSION_ID.to_owned();
+    let store = store_id();
+    let ids: Vec<&str> = if unpacked == store { vec![unpacked.as_str()] } else { vec![unpacked.as_str(), store.as_str()] };
     let mut found = Vec::new();
     for (index, browser) in browsers.iter().enumerate() {
         let Some(state) = read_json(&browser.user_data.join("Local State")) else { continue };
@@ -107,17 +116,23 @@ pub fn detect(browsers: &[Browser]) -> Vec<Match> {
             _ => vec![("Default".into(), "Default".into())],
         };
         for (dir, name) in profiles {
-            let setting = ["Secure Preferences", "Preferences"]
+            let prefs_list: Vec<Value> = ["Secure Preferences", "Preferences"]
                 .iter()
                 .filter_map(|file| read_json(&browser.user_data.join(&dir).join(file)))
-                .find_map(|prefs| prefs.pointer(&format!("/extensions/settings/{id}")).cloned());
-            let Some(setting) = setting else { continue };
+                .collect();
+            let detected = ids.iter().find_map(|id| {
+                prefs_list
+                    .iter()
+                    .find_map(|prefs| prefs.pointer(&format!("/extensions/settings/{id}")).cloned())
+                    .map(|setting| ((*id).to_owned(), setting))
+            });
+            let Some((extension_id, setting)) = detected else { continue };
             let enabled = match setting.get("disable_reasons") {
                 Some(Value::Array(reasons)) => reasons.is_empty(),
                 Some(Value::Number(n)) => n.as_u64() == Some(0),
                 _ => true,
             };
-            found.push(Match { browser: index, profile: dir, profile_name: name, enabled });
+            found.push(Match { browser: index, profile: dir, profile_name: name, extension_id, enabled });
         }
     }
     found
@@ -132,6 +147,29 @@ pub fn on_path(name: &str) -> Option<PathBuf> {
 
 fn spawn(program: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> bool {
     Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok()
+}
+
+impl Browser {
+    pub fn is_installed(&self) -> bool {
+        if self.user_data.is_dir() {
+            return true;
+        }
+        if cfg!(target_os = "macos") {
+            let app = &self.launch[0];
+            return [PathBuf::from("/Applications"), home().join("Applications")]
+                .into_iter()
+                .any(|dir| dir.join(format!("{app}.app")).exists());
+        }
+        if cfg!(windows) {
+            return self.launch.iter().any(|p| Path::new(p).is_file());
+        }
+        self.launch.iter().any(|name| on_path(name).is_some())
+    }
+}
+
+/// Opens `url` in the first installed Chromium-family browser (Google Chrome first; never Safari/default browser).
+pub fn open_chromium(browsers: &[Browser], url: &str) -> Option<&'static str> {
+    browsers.iter().filter(|b| b.is_installed()).find(|b| open_in(b, url, None)).map(|b| b.name)
 }
 
 /// Opens `url` in a specific browser (and profile); chrome-extension:// URLs only open this way.
@@ -157,16 +195,43 @@ pub fn open_in(browser: &Browser, url: &str, profile: Option<&str>) -> bool {
     };
     match exe {
         Some(exe) => spawn(exe, &args),
-        None => url.starts_with("http") && open_default(url),
+        None => false,
     }
 }
 
-pub fn open_default(url: &str) -> bool {
-    if cfg!(target_os = "macos") {
-        Command::new("open").arg(url).status().is_ok_and(|s| s.success())
-    } else if cfg!(windows) {
-        Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).status().is_ok_and(|s| s.success())
-    } else {
-        Command::new("xdg-open").arg(url).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn extension_url_points_to_fork_releases_not_cws() {
+        let url = extension_url();
+        assert!(url.starts_with("https://github.com/sjseo298/browse/releases"));
+        assert!(!url.contains("chromewebstore"));
+    }
+
+    #[test]
+    fn detect_finds_unpacked_extension_id() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("browse-detect-test-{nonce}"));
+        let profile = root.join("Default");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(root.join("Local State"), r#"{"profile":{"info_cache":{"Default":{"name":"Personal"}}}}"#).unwrap();
+        std::fs::write(
+            profile.join("Preferences"),
+            format!(r#"{{"extensions":{{"settings":{{"{}":{{"disable_reasons":[]}}}}}}}}"#, browse_relay::protocol::UNPACKED_EXTENSION_ID),
+        )
+        .unwrap();
+
+        let browser = Browser { name: "Google Chrome", user_data: root.clone(), launch: vec!["Google Chrome".into()] };
+        let matches = detect(&[browser]);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].extension_id, browse_relay::protocol::UNPACKED_EXTENSION_ID);
+        assert_eq!(matches[0].profile, "Default");
+        assert_eq!(matches[0].profile_name, "Personal");
+        assert!(matches[0].enabled);
     }
 }

@@ -265,11 +265,11 @@ fn manual_pair(code: &str) -> String {
 }
 
 /// Opens the extension's status page with a one-time code in its fragment, in the profile that has it.
-fn pair_in_browser(browser: &Browser, profile: &str, open: bool) -> anyhow::Result<bool> {
+fn pair_in_browser(browser: &Browser, profile: &str, extension_id: &str, open: bool) -> anyhow::Result<bool> {
     let code = mint_code(&format!("{:016x}", session::random_u64()))?;
     let listen = relay_api::port();
     let port = if listen == relay_api::DEFAULT_PORT { String::new() } else { format!("&port={listen}") };
-    let url = format!("chrome-extension://{}/welcome.html#code={code}{port}", browsers::store_id());
+    let url = format!("chrome-extension://{extension_id}/welcome.html#code={code}{port}");
     // The extension takes a port from the link only when it's one of browse's own (19988, 19990-19997); a relay pinned
     // elsewhere with OPENCODE_BROWSER_PORT is entered by hand, with its address.
     let known = listen == relay_api::DEFAULT_PORT || browse_relay::protocol::FALLBACK_PORTS.contains(&listen);
@@ -301,7 +301,7 @@ pub fn connect_extension(open: bool, wait: bool, timeout: Duration) -> anyhow::R
     let offer = |all: &[Browser]| -> anyhow::Result<bool> {
         let found = if ssh { Vec::new() } else { browsers::detect(all) };
         if let Some(m) = found.iter().find(|m| m.enabled) {
-            pair_in_browser(&all[m.browser], &m.profile, open)?;
+            pair_in_browser(&all[m.browser], &m.profile, &m.extension_id, open)?;
             return Ok(true);
         }
         let off: Vec<_> = found.iter().map(|m| format!("{} ({})", all[m.browser].name, m.profile_name)).collect();
@@ -317,12 +317,23 @@ pub fn connect_extension(open: bool, wait: bool, timeout: Duration) -> anyhow::R
         offered = true;
     }
     if !offered {
-        let url = browsers::store_url();
-        let opened = open && browsers::open_default(&url);
-        println!("Add browse to your browser from the Chrome Web Store{}: {url}", if opened { " (opened)" } else { "" });
+        let url = browsers::extension_url();
+        let opened_browser = if open { browsers::open_chromium(&all, &url) } else { None };
+        if let Some(name) = opened_browser {
+            println!("Open {name} (opened: {url}) — Safari is not supported. Download browse-extension-<version>.zip, unzip it, open chrome://extensions, turn on Developer mode, click Load unpacked, and select the unzipped folder.");
+        } else {
+            println!("Open Google Chrome (or another Chromium-based browser — Safari is not supported), download browse-extension-<version>.zip from {url}, unzip it, open chrome://extensions, turn on Developer mode, click Load unpacked, and select the unzipped folder.");
+        }
     }
     if !std::io::stdout().is_terminal() {
-        println!("Agent: ask the user to {}. Then call the browse status tool to check the connection.", if offered { "finish connecting browse in their browser" } else { "add browse from the Chrome Web Store" });
+        println!(
+            "Agent: {}. Then call the browse status tool to check the connection.",
+            if offered {
+                "ask the user to finish connecting browse in Google Chrome (or their Chromium browser)"
+            } else {
+                "ask the user to open Google Chrome (not Safari), download browse-extension-<version>.zip from https://github.com/sjseo298/browse/releases/latest, unzip it, load it unpacked in chrome://extensions (Developer mode), and run `browse pair`"
+            }
+        );
     }
     if !wait || ssh || !display {
         return Ok(0);
@@ -427,14 +438,10 @@ pub fn pair(args: &[String]) -> anyhow::Result<i32> {
 }
 
 pub fn extension() -> i32 {
-    println!("Add browse to your Chrome-family browser from the Chrome Web Store: {}", browsers::store_url());
-    println!("Then run `browse install` (or `browse pair`) to connect it.");
-    if update::channel() == "dev" {
-        println!();
-        println!("The store extension works with dev builds too. To try the dev extension instead, download");
-        println!("https://sjseo298.github.io/browse/release/browse/extension/dev/chromium, unzip it, turn on Developer mode on your browser's");
-        println!("extensions page, click Load unpacked and pick the unzipped folder; then run `browse pair`.");
-    }
+    println!("Open Google Chrome (or another Chromium-based browser — Safari is not supported):");
+    println!("1. Download browse-extension-<version>.zip from {}", browsers::extension_url());
+    println!("2. Unzip it, open chrome://extensions, turn on Developer mode, click Load unpacked, and select the unzipped folder.");
+    println!("3. Run `browse install` (or `browse pair`) to connect it.");
     0
 }
 

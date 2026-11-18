@@ -55,9 +55,12 @@ extension, download `browse-extension-<version>.zip` from [GitHub Releases](http
    computer start checked (your last choice next time). Type to search all supported agents, ↑/↓ to move, Space or Tab
    to toggle, Enter to confirm. An agent running `browse install` sets up itself. Without a terminal OpenCode is the
    default. Edits keep the comments and formatting of each agent's config.
-3. **Connects the extension.** If no browser has browse yet, install opens it in the Chrome Web Store; add it, and
-   install pairs it once it's there. If a browser already has it, install opens its setup page with a one-time pairing
-   code in the link, so it pairs without copying anything. Over SSH or without a display it prints a code instead.
+3. **Connects the extension.** Open **Google Chrome** (or another Chromium-based browser — Safari is not supported).
+   If no browser has browse yet, `browse install` opens the fork's [GitHub Releases](https://github.com/sjseo298/browse/releases/latest)
+   in Chrome so you can download `browse-extension-<version>.zip`, unzip it, turn on **Developer mode** at
+   `chrome://extensions`, and click **Load unpacked**. Once loaded, `browse install` (or `browse pair`) opens the
+   extension's setup page with a one-time pairing code in the link so it pairs automatically. Over SSH or without a
+   display it prints a code instead.
 
 Then ask your agent to *"open news.ycombinator.com and tell me the top story"*. An agent that was already running
 needs a restart (or an MCP reload) to load browse.
@@ -167,7 +170,7 @@ looks. Choose **Tell me** or **Off** under **updates** on the extension's option
 notify|off` (`OPENCODE_BROWSER_AUTO_UPDATE=off` in the environment overrides both). Off still checks hourly, and
 installs nothing. To go back, rerun the install
 script with `--channel <channel>` or `--version <version>`, or install `@sjseo298/browse@<version>` with your package
-manager. The Chrome Web Store updates the extension.
+manager. For extension updates, download the new `browse-extension-<version>.zip` from [GitHub Releases](https://github.com/sjseo298/browse/releases/latest) (or rebuild `dist/` with `bun run build`) and reload it in `chrome://extensions`.
 
 **Dev builds**: every push to `dev` publishes one: `curl -fsSL https://sjseo298.github.io/browse/install | bash -s --
 --channel dev`, or `npx @sjseo298/browse@dev install`. The store extension works with dev builds. To try the dev
