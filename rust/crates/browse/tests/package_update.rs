@@ -1,4 +1,4 @@
-//! Every install kind checks Anomaly's release service for the latest version: its channel manifest with
+//! Every install kind checks the release service for the latest version: its channel manifest with
 //! `browse/<channel>/<version>/cli/<kind>` as the User-Agent. A binary install downloads the manifest's tarball; a
 //! global install runs the package manager that installed it (a stub that records its arguments and replaces the
 //! package as that manager would) for the manifest's version, and restarts on the new binary once idle. A package
@@ -149,9 +149,9 @@ impl Scene {
         Scene { home: root.join("home"), calls: root.join("calls"), started: root.join("started"), root }
     }
 
-    /// @opencode/browse at `package` at the running version: its launcher.
+    /// @sjseo298/browse at `package` at the running version: its launcher.
     fn package(&self, package: &Path) -> PathBuf {
-        write(&package.join("package.json"), &format!(r#"{{"name":"@opencode/browse","version":"{}"}}"#, version()));
+        write(&package.join("package.json"), &format!(r#"{{"name":"@sjseo298/browse","version":"{}"}}"#, version()));
         let launcher = package.join("dist/cli.mjs");
         write(&launcher, "");
         launcher
@@ -176,7 +176,7 @@ impl Scene {
     /// manager replaces them (the binary by a rename: a running executable can't be written).
     fn swap(&self, package: &Path, binary: &Path) -> String {
         format!(
-            "mkdir -p '{bin}' '{package}'\nprintf '%s' '{{\"name\":\"@opencode/browse\",\"version\":\"{NEXT}\"}}' > '{package}/package.json'\ncat > '{bin}/.next' <<'EOF'\n{next}EOF\nchmod +x '{bin}/.next'\nmv -f '{bin}/.next' '{binary}'\n",
+            "mkdir -p '{bin}' '{package}'\nprintf '%s' '{{\"name\":\"@sjseo298/browse\",\"version\":\"{NEXT}\"}}' > '{package}/package.json'\ncat > '{bin}/.next' <<'EOF'\n{next}EOF\nchmod +x '{bin}/.next'\nmv -f '{bin}/.next' '{binary}'\n",
             bin = binary.parent().unwrap().display(),
             package = package.display(),
             binary = binary.display(),
@@ -235,7 +235,7 @@ impl Scene {
 
         let status = self.status(binary, &service, port);
         let updates = status["setup"]["updates"].as_str().unwrap();
-        assert!(updates.starts_with(&format!("automatic ({manager} @opencode/browse@")), "{updates}");
+        assert!(updates.starts_with(&format!("automatic ({manager} @sjseo298/browse@")), "{updates}");
 
         let mut check = Command::new(binary);
         check.args(["update", "--check"]);
@@ -307,7 +307,7 @@ fn binary_install_checks_the_release_service() {
 fn npx_run_checks_the_release_service() {
     let scene = Scene::new("npx");
     let modules = scene.home.join(".npm/_npx/4d2a/node_modules");
-    let launcher = scene.package(&modules.join("@opencode/browse"));
+    let launcher = scene.package(&modules.join("@sjseo298/browse"));
     let binary = scene.platform(&modules.join(format!("@opencode/{PLATFORM}")));
     let (service, requests) = release_service();
     let port = free_port();
@@ -324,14 +324,14 @@ fn npx_run_checks_the_release_service() {
 fn npm_global_install() {
     let scene = Scene::new("npm");
     let prefix = scene.home.join(".nvm/versions/node/v22.11.0");
-    let package = prefix.join("lib/node_modules/@opencode/browse");
+    let package = prefix.join("lib/node_modules/@sjseo298/browse");
     let launcher = scene.package(&package);
     let binary = scene.platform(&package.join(format!("node_modules/@opencode/{PLATFORM}")));
-    link(&prefix.join("bin/browse"), "../lib/node_modules/@opencode/browse/dist/cli.mjs");
+    link(&prefix.join("bin/browse"), "../lib/node_modules/@sjseo298/browse/dist/cli.mjs");
     let stubs = scene.root.join("stubs");
     write_executable(&stubs.join("npm"), &format!("#!/bin/sh\necho \"$*\" >> '{}'\n{}", scene.calls.display(), scene.swap(&package, &binary)));
     scene.run("npm", &binary, &launcher, Some(&stubs), |registry| {
-        format!("install --global --prefix {} --no-fund --no-audit --no-update-notifier @opencode/browse@{NEXT} --registry={registry} --@opencode:registry={registry}", prefix.display())
+        format!("install --global --prefix {} --no-fund --no-audit --no-update-notifier @sjseo298/browse@{NEXT} --registry={registry} --@sjseo298:registry={registry}", prefix.display())
     });
 }
 
@@ -339,17 +339,17 @@ fn npm_global_install() {
 fn npm_global_install_waits_quietly_when_npm_lags_the_release() {
     let scene = Scene::new("npm-etarget");
     let prefix = scene.home.join(".nvm/versions/node/v22.11.0");
-    let package = prefix.join("lib/node_modules/@opencode/browse");
+    let package = prefix.join("lib/node_modules/@sjseo298/browse");
     let launcher = scene.package(&package);
     let binary = scene.platform(&package.join(format!("node_modules/@opencode/{PLATFORM}")));
-    link(&prefix.join("bin/browse"), "../lib/node_modules/@opencode/browse/dist/cli.mjs");
+    link(&prefix.join("bin/browse"), "../lib/node_modules/@sjseo298/browse/dist/cli.mjs");
     // The first install gets npm's ETARGET (the service has the release, npm doesn't yet); the next one succeeds.
     let marker = scene.root.join("etarget");
     let stubs = scene.root.join("stubs");
     write_executable(
         &stubs.join("npm"),
         &format!(
-            "#!/bin/sh\necho \"$*\" >> '{calls}'\nif [ ! -f '{marker}' ]; then\n  : > '{marker}'\n  echo 'npm error code ETARGET' >&2\n  echo 'npm error notarget No matching version found for @opencode/browse@{NEXT}.' >&2\n  exit 1\nfi\n{swap}",
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\nif [ ! -f '{marker}' ]; then\n  : > '{marker}'\n  echo 'npm error code ETARGET' >&2\n  echo 'npm error notarget No matching version found for @sjseo298/browse@{NEXT}.' >&2\n  exit 1\nfi\n{swap}",
             calls = scene.calls.display(),
             marker = marker.display(),
             swap = scene.swap(&package, &binary),
@@ -377,7 +377,7 @@ fn npm_global_install_waits_quietly_when_npm_lags_the_release() {
     let calls = std::fs::read_to_string(&scene.calls).unwrap();
     let calls: Vec<&str> = calls.lines().collect();
     assert_eq!(calls.len(), 2, "{calls:?}");
-    assert!(calls[0].contains(&format!("@opencode/browse@{NEXT}")), "{calls:?}");
+    assert!(calls[0].contains(&format!("@sjseo298/browse@{NEXT}")), "{calls:?}");
     assert_eq!(calls[0], calls[1]);
     scene.requests_are(&requests, "npm");
     let state: serde_json::Value = serde_json::from_slice(&std::fs::read(scene.home.join(".browse/auto-update.json")).unwrap()).unwrap();
@@ -391,29 +391,29 @@ fn bun_global_install() {
     let scene = Scene::new("bun");
     let root = scene.home.join(".bun");
     let global = root.join("install/global");
-    write(&global.join("package.json"), r#"{"dependencies":{"@opencode/browse":"dev"}}"#);
-    let package = global.join("node_modules/@opencode/browse");
+    write(&global.join("package.json"), r#"{"dependencies":{"@sjseo298/browse":"dev"}}"#);
+    let package = global.join("node_modules/@sjseo298/browse");
     let launcher = scene.package(&package);
     let binary = scene.platform(&global.join(format!("node_modules/@opencode/{PLATFORM}")));
     // No bun on PATH: the bun folder's own bun.
     write_executable(&root.join("bin/bun"), &format!("#!/bin/sh\necho \"$BUN_INSTALL $*\" >> '{}'\n{}", scene.calls.display(), scene.swap(&package, &binary)));
-    scene.run("bun", &binary, &launcher, None, |registry| format!("{} add --global --no-progress @opencode/browse@{NEXT} --registry={registry}", root.display()));
+    scene.run("bun", &binary, &launcher, None, |registry| format!("{} add --global --no-progress @sjseo298/browse@{NEXT} --registry={registry}", root.display()));
 }
 
 #[test]
 fn yarn_global_install() {
     let scene = Scene::new("yarn");
     let folder = scene.home.join(".local/share/yarn/global");
-    write(&folder.join("package.json"), r#"{"dependencies":{"@opencode/browse":"0.1.0"}}"#);
+    write(&folder.join("package.json"), r#"{"dependencies":{"@sjseo298/browse":"0.1.0"}}"#);
     write(&folder.join("yarn.lock"), "");
-    let package = folder.join("node_modules/@opencode/browse");
+    let package = folder.join("node_modules/@sjseo298/browse");
     let launcher = scene.package(&package);
     let binary = scene.platform(&folder.join(format!("node_modules/@opencode/{PLATFORM}")));
-    link(&scene.home.join(".yarn/bin/browse"), "../../.local/share/yarn/global/node_modules/@opencode/browse/dist/cli.mjs");
+    link(&scene.home.join(".yarn/bin/browse"), "../../.local/share/yarn/global/node_modules/@sjseo298/browse/dist/cli.mjs");
     let stubs = scene.root.join("stubs");
     write_executable(&stubs.join("yarn"), &format!("#!/bin/sh\necho \"$*\" >> '{}'\n{}", scene.calls.display(), scene.swap(&package, &binary)));
     scene.run("yarn", &binary, &launcher, Some(&stubs), |registry| {
-        format!("global add @opencode/browse@{NEXT} --global-folder {} --non-interactive --no-progress --registry {registry}", folder.display())
+        format!("global add @sjseo298/browse@{NEXT} --global-folder {} --non-interactive --no-progress --registry {registry}", folder.display())
     });
 }
 

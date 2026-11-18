@@ -18,12 +18,12 @@ describe("userCodeStack", () => {
   test("keeps the message, call log and the agent's frame from a relay stack", () => {
     const error = new Error("locator.click: Timeout 1000ms exceeded.")
     error.stack = `${message}
-    at Object.apply (/Users/me/.cache/@opencode/browse/dist/relay-ns525pms.mjs:8643:28)
+    at Object.apply (/Users/me/.cache/@sjseo298/browse/dist/relay-ns525pms.mjs:8643:28)
     at execute.js:5:43
-    at /Users/me/.cache/@opencode/browse/dist/relay-ns525pms.mjs:8391:36
+    at /Users/me/.cache/@sjseo298/browse/dist/relay-ns525pms.mjs:8391:36
     at evalmachine.<anonymous>:1:156
-    at ExecuteRealm.run (/Users/me/.cache/@opencode/browse/dist/relay-ns525pms.mjs:8388:27)
-    at runUserCode (/Users/me/.cache/@opencode/browse/dist/relay-ns525pms.mjs:10742:34)
+    at ExecuteRealm.run (/Users/me/.cache/@sjseo298/browse/dist/relay-ns525pms.mjs:8388:27)
+    at runUserCode (/Users/me/.cache/@sjseo298/browse/dist/relay-ns525pms.mjs:10742:34)
     at node:internal/process/task_queues:105:5`
     expect(userCodeStack(error)).toBe(`${message}\n    at execute.js:5:43`)
   })

@@ -1,5 +1,5 @@
 {
-  "name": "@opencode/browse",
+  "name": "@sjseo298/browse",
   "description": "browse: let your AI agents use your real browser. The MCP server and relay for the browse Chrome extension.",
   "type": "module",
   "license": "MIT",
@@ -16,7 +16,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anomalyco/browse.git",
+    "url": "git+https://github.com/sjseo298/browse.git",
     "directory": "rust"
   },
   "publishConfig": {

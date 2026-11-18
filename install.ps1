@@ -1,13 +1,13 @@
-# Installs browse on Windows: downloads the browse binary for this computer from Anomaly's release service into
+# Installs browse on Windows: downloads the browse binary for this computer from the release service into
 # %USERPROFILE%\.local\bin (or %XDG_BIN_HOME%), then hands over to `browse install`, which does the rest (PATH, your
-# agents, pairing with your browser). Served at https://opencode.ai/browse/install.ps1; the PowerShell twin of ./install.
+# agents, pairing with your browser). Served at https://sjseo298.github.io/browse/install.ps1; the PowerShell twin of ./install.
 #
-#   irm https://opencode.ai/browse/install.ps1 | iex
+#   irm https://sjseo298.github.io/browse/install.ps1 | iex
 #
 # `irm | iex` can't take arguments. To pass some, run the script as a script block:
 #
-#   & ([scriptblock]::Create((irm https://opencode.ai/browse/install.ps1))) --remote
-#   & ([scriptblock]::Create((irm https://opencode.ai/browse/install.ps1))) --version 0.0.7 --agent claude
+#   & ([scriptblock]::Create((irm https://sjseo298.github.io/browse/install.ps1))) --remote
+#   & ([scriptblock]::Create((irm https://sjseo298.github.io/browse/install.ps1))) --version 0.0.7 --agent claude
 #
 # or set them in the environment first: $env:VERSION = "0.0.7"; $env:BROWSE_CHANNEL = "dev"
 #
@@ -64,8 +64,8 @@ function Install-browse {
 browse installer
 
 Usage:
-  irm https://opencode.ai/browse/install.ps1 | iex
-  & ([scriptblock]::Create((irm https://opencode.ai/browse/install.ps1))) [options] [browse install options]
+  irm https://sjseo298.github.io/browse/install.ps1 | iex
+  & ([scriptblock]::Create((irm https://sjseo298.github.io/browse/install.ps1))) [options] [browse install options]
 
 Options:
   -h, --help              Show this help
@@ -140,7 +140,7 @@ Anything else goes to ``browse install``, e.g. --remote, --agent claude or --no-
                 if (-not $avx2) { $target = "x64-baseline" }
             }
 
-            $package = "@opencode/browse-windows-$target"
+            $package = "@sjseo298/browse-windows-$target"
             $encoded = "@opencode%2fbrowse-windows-$target"
             if ($pinned) {
                 $version = $requested -replace "^v", ""
@@ -168,9 +168,9 @@ Anything else goes to ``browse install``, e.g. --remote, --agent claude or --no-
                 }
                 $expectedSha512 = ([BitConverter]::ToString($expectedBytes) -replace "-", "").ToLowerInvariant()
             } else {
-                # The channel's current release from the Anomaly release service (anomalyco/release docs/protocol.md). The
+                # The channel's current release from the release service (release-protocol spec: anomalyco/release docs/protocol.md). The
                 # manifest names the file for this target; its size and SHA-256 must match before it is used.
-                $service = if ($env:OPENCODE_BROWSER_RELEASE_SERVICE) { $env:OPENCODE_BROWSER_RELEASE_SERVICE } else { "https://anoma.ly/release" }
+                $service = if ($env:OPENCODE_BROWSER_RELEASE_SERVICE) { $env:OPENCODE_BROWSER_RELEASE_SERVICE } else { "https://sjseo298.github.io/browse/release" }
                 $service = $service.TrimEnd("/")
                 if (-not $service.EndsWith("/release")) { throw "OPENCODE_BROWSER_RELEASE_SERVICE must end in /release, not $service" }
                 $manifestUrl = "$service/browse/cli/$channel.json"

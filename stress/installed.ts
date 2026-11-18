@@ -496,7 +496,7 @@ const scenarios: Scenario[] = [
       await exec(oldAgent, oldSession, `await page.goto(${JSON.stringify(ctx.fx.url("/form"))}); return 1`, 60_000)
       const before = status(ctx.u, { binary: oldEntry })
       const t = Date.now()
-      const install = spawnSync("bash", ["-c", "curl -fsSL https://opencode.ai/browse/install | bash -s -- --no-wait"], { encoding: "utf8", env: userEnv(ctx.u), cwd: ctx.u.home, timeout: 300_000 })
+      const install = spawnSync("bash", ["-c", "curl -fsSL https://sjseo298.github.io/browse/install | bash -s -- --no-wait"], { encoding: "utf8", env: userEnv(ctx.u), cwd: ctx.u.home, timeout: 300_000 })
       ctx.artifact("npm-to-binary-install.txt", install.stdout + install.stderr)
       if (install.status !== 0) throw new Error(`curl installer exited ${install.status}: ${(install.stdout + install.stderr).slice(-400)}`)
       const installMs = Date.now() - t

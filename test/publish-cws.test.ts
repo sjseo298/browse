@@ -96,7 +96,7 @@ async function run(scenario: Scenario) {
     CWS_REFRESH_TOKEN: "refresh",
     CWS_PUBLISHER_ID: "pub",
     CWS_ITEM_ID: "item",
-    GITHUB_REPOSITORY: "anomalyco/browse",
+    GITHUB_REPOSITORY: "sjseo298/browse",
     GITHUB_ACTIONS: "",
     GITHUB_STEP_SUMMARY: "",
     BROWSE_VERSION: "0.1.1",

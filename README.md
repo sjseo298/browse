@@ -4,7 +4,7 @@
 </picture>
 
 Let your AI agents use your real browser: your tabs, your logins, your extensions. A small native MCP server and a
-Chromium extension, for [OpenCode](https://opencode.ai), Claude Code, Codex, Cursor and any other MCP client.
+Chromium extension, for [OpenCode](https://github.com/sjseo298/opencode), Claude Code, Codex, Cursor and any other MCP client.
 
 ---
 
@@ -17,31 +17,31 @@ It works in Chrome, Edge, Brave, Arc, Helium, Vivaldi, Opera and Chromium.
 ## Install
 
 ```sh
-curl -fsSL https://opencode.ai/browse/install | bash
+curl -fsSL https://sjseo298.github.io/browse/install | bash
 ```
 
 Or paste this into your agent: *"Set up browse so you can use my Chrome: run
-`curl -fsSL https://opencode.ai/browse/install | bash`"*. It sets browse up for the agent that ran it.
+`curl -fsSL https://sjseo298.github.io/browse/install | bash`"*. It sets browse up for the agent that ran it.
 
 Other ways to install, all of which end in the same `browse install`:
 
 | How | Command | Where `browse` lives, and what updates it |
 | --- | --- | --- |
-| Install script (macOS, Linux) | `curl -fsSL https://opencode.ai/browse/install \| bash` | `~/.local/bin/browse` (`$XDG_BIN_HOME` when set); updates itself |
-| Install script (Windows) | `irm https://opencode.ai/browse/install.ps1 \| iex` in PowerShell | `%USERPROFILE%\.local\bin\browse.exe`; updates itself |
-| npx, bunx | `npx @opencode/browse install` | copied to `~/.local/bin/browse` once; updates itself from then on |
-| npm | `npm i -g @opencode/browse`, then `browse install` | npm's global `browse`; browse runs `npm install -g` to update |
-| bun | `bun add -g @opencode/browse`, then `browse install` | `~/.bun/bin/browse`; browse runs `bun add -g` to update |
-| pnpm, yarn, volta | `pnpm add -g` / `yarn global add` / `volta install @opencode/browse`, then `browse install` | that manager's `browse`; updated with the same manager |
+| Install script (macOS, Linux) | `curl -fsSL https://sjseo298.github.io/browse/install \| bash` | `~/.local/bin/browse` (`$XDG_BIN_HOME` when set); updates itself |
+| Install script (Windows) | `irm https://sjseo298.github.io/browse/install.ps1 \| iex` in PowerShell | `%USERPROFILE%\.local\bin\browse.exe`; updates itself |
+| npx, bunx | `npx @sjseo298/browse install` | copied to `~/.local/bin/browse` once; updates itself from then on |
+| npm | `npm i -g @sjseo298/browse`, then `browse install` | npm's global `browse`; browse runs `npm install -g` to update |
+| bun | `bun add -g @sjseo298/browse`, then `browse install` | `~/.bun/bin/browse`; browse runs `bun add -g` to update |
+| pnpm, yarn, volta | `pnpm add -g` / `yarn global add` / `volta install @sjseo298/browse`, then `browse install` | that manager's `browse`; updated with the same manager |
 
 There's always exactly one `browse`: a global package install is left to its package manager (nothing is copied next
 to it, and a leftover `~/.local/bin/browse` from an earlier install is removed), and agents run the same `browse` your
 terminal does. If `browse install` finds another `browse` on your PATH it tells you which one and how to remove it.
 
-The install script reads the channel's manifest from [Anomaly's release service](https://anoma.ly/release), downloads
+The install script reads the channel's manifest from [the release service](https://sjseo298.github.io/browse/release), downloads
 the binary for this computer and checks its size and SHA-256 before installing it. `--channel stable|beta|dev` picks
 the channel (`stable` by default); `--version <version>` installs a specific version from npm, checked against npm's
-published SHA-512 integrity. With npm, `@opencode/browse@dev` is the dev channel. The npm package is a small Node
+published SHA-512 integrity. With npm, `@sjseo298/browse@dev` is the dev channel. The npm package is a small Node
 launcher (Node 22+) that runs the native binary npm installed for your platform.
 
 ### What `browse install` does
@@ -73,7 +73,7 @@ Windows, or `CONFIG` on Linux. The paths below are defaults; a client's existing
 
 | Agent (flag) | User config | Format / server key |
 | --- | --- | --- |
-| [OpenCode](https://opencode.ai/v2/docs/mcp-servers) (`opencode`) | `CONFIG/opencode/opencode.json` or `.jsonc` | JSONC · `mcp.servers` |
+| [OpenCode](https://github.com/sjseo298/opencode) (`opencode`) | `CONFIG/opencode/opencode.json` or `.jsonc` | JSONC · `mcp.servers` |
 | [Claude Code](https://code.claude.com/docs/en/mcp-quickstart) (`claude`) | `~/.claude.json` | JSON · `mcpServers` |
 | [Claude Desktop](https://modelcontextprotocol.io/docs/develop/build-server) (`claude-desktop`) | `APP/Claude/claude_desktop_config.json` | JSON · `mcpServers` |
 | [Cursor](https://cursor.com/docs/context/mcp) (`cursor`) | `~/.cursor/mcp.json` | JSON · `mcpServers` |
@@ -151,7 +151,7 @@ channel's release when it isn't the one running (a rollback reaches everyone too
 - the install script's binary replaces `~/.local/bin/browse` with the manifest's tarball after checking its size and
   SHA-256;
 - global installs run the package manager that installed them (`npm install -g`, `bun add -g`, `pnpm add -g`,
-  `yarn global add`, `volta install`) to install `@opencode/browse@<the manifest's version>` into the same place. A
+  `yarn global add`, `volta install`) to install `@sjseo298/browse@<the manifest's version>` into the same place. A
   release reaches the service a few minutes before npm, so a package manager that doesn't have the version yet is
   retried quietly;
 - `npx`, `bunx`, `pnpm dlx` and `yarn dlx` runs resolve the package themselves: they only tell you another release is
@@ -163,12 +163,12 @@ working with the newer relay until the agent restarts it. `browse update` update
 looks. Choose **Tell me** or **Off** under **updates** on the extension's options page, or run `browse update --mode
 notify|off` (`OPENCODE_BROWSER_AUTO_UPDATE=off` in the environment overrides both). Off still checks hourly, and
 installs nothing. To go back, rerun the install
-script with `--channel <channel>` or `--version <version>`, or install `@opencode/browse@<version>` with your package
+script with `--channel <channel>` or `--version <version>`, or install `@sjseo298/browse@<version>` with your package
 manager. The Chrome Web Store updates the extension.
 
-**Dev builds**: every push to `dev` publishes one: `curl -fsSL https://opencode.ai/browse/install | bash -s --
---channel dev`, or `npx @opencode/browse@dev install`. The store extension works with dev builds. To try the dev
-extension too, download https://anoma.ly/release/browse/extension/dev/chromium, unzip it, turn on **Developer mode** on
+**Dev builds**: every push to `dev` publishes one: `curl -fsSL https://sjseo298.github.io/browse/install | bash -s --
+--channel dev`, or `npx @sjseo298/browse@dev install`. The store extension works with dev builds. To try the dev
+extension too, download https://sjseo298.github.io/browse/release/browse/extension/dev/chromium, unzip it, turn on **Developer mode** on
 your browser's extensions page, click **Load unpacked**, pick the folder and run `browse pair` (`browse extension`
 prints these steps on the dev channel). Remove the store extension first so only one browse runs in that profile.
 
@@ -180,7 +180,7 @@ browse uninstall
 
 It removes browse from every agent config it was added to, stops the relay, deletes `~/.local/bin/browse` (for the
 install script and npx installs), the PATH line it added and browse's files. A global package stays with its package
-manager: uninstall prints the command (`npm rm -g @opencode/browse`, `bun remove -g @opencode/browse`, ...). Remove the
+manager: uninstall prints the command (`npm rm -g @sjseo298/browse`, `bun remove -g @sjseo298/browse`, ...). Remove the
 extension from your browser to finish.
 
 ## Using it
@@ -361,7 +361,7 @@ earlier TypeScript implementation, kept as a reference.
 
 ## Contributing
 
-We don't take pull requests. [Open an issue](https://github.com/anomalyco/browse/issues)
+We don't take pull requests. [Open an issue](https://github.com/sjseo298/browse/issues)
 describing the bug or idea, and our agents usually turn it around fast.
 
 ## License

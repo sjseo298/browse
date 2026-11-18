@@ -98,7 +98,7 @@ async function poll(s: Awaited<ReturnType<typeof snapshot>>) {
       if (!head) try {
         const doc = await fetch(`https://registry.npmjs.org/-/npm/v1/attestations/@opencode%2fbrowse@${pkg.version}`, { signal: AbortSignal.timeout(8000) }).then(r => r.json())
         const payload = doc.attestations.find((a: { predicateType: string }) => a.predicateType === "https://slsa.dev/provenance/v1").bundle.dsseEnvelope.payload
-        const dep = JSON.parse(Buffer.from(payload, "base64").toString()).predicate.buildDefinition.resolvedDependencies.find((d: { uri: string }) => d.uri === "git+https://github.com/anomalyco/browse@refs/heads/dev")
+        const dep = JSON.parse(Buffer.from(payload, "base64").toString()).predicate.buildDefinition.resolvedDependencies.find((d: { uri: string }) => d.uri === "git+https://github.com/sjseo298/browse@refs/heads/dev")
         if (/^[0-9a-f]{40}$/.test(dep?.digest.gitCommit)) head = dep.digest.gitCommit
       } catch { /* version is still verifiable directly from the running artifact */ }
       // A moving tag must not buy a stalled install another hour (or reset its retry throttle).

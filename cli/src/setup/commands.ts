@@ -204,7 +204,7 @@ export async function extension() {
   if (!folder) {
     if (!STORE_URL)
       fail(
-        "This package doesn't know its Chrome Web Store item. Install a released version (`npx @opencode/browse install`), or set up browse from a checkout.",
+        "This package doesn't know its Chrome Web Store item. Install a released version (`npx @sjseo298/browse install`), or set up browse from a checkout.",
       )
     log(`Install browse from the Chrome Web Store: ${STORE_URL}`)
     log(`Then run \`${cliCommand("install")}\` again to pair it.`)
@@ -484,7 +484,7 @@ export async function uninstall() {
     }
   }
   if (!compiledBinary() && !fromSource) {
-    const npm = await runCommand("npm", ["uninstall", "-g", "@opencode/browse"], { timeoutMs: 120_000 })
+    const npm = await runCommand("npm", ["uninstall", "-g", "@sjseo298/browse"], { timeoutMs: 120_000 })
     log(npm.status === 0 ? "✓ Removed the global npm package" : `! Couldn't remove the global npm package: ${(npm.stderr || npm.stdout).trim() || "npm uninstall failed"}`)
   }
   if (host) log("✓ Removed the native messaging host of an earlier version")

@@ -1,6 +1,6 @@
 //! How this browse was installed, which decides how it updates (cli/src/update/auto-update.ts `InstallKind`):
 //!   binary   the install script's (or `browse install`'s) executable in the bin folder
-//!   global   @opencode/browse installed globally by npm, bun, pnpm, yarn classic or volta: the npm launcher
+//!   global   @sjseo298/browse installed globally by npm, bun, pnpm, yarn classic or volta: the npm launcher
 //!            (npm/browse.mjs) runs its platform package's binary, which is this one
 //!   runner   a one-off run that npx, bunx, pnpm dlx or yarn dlx resolves itself
 //!   checkout a build in a checkout's cargo target folder
@@ -13,7 +13,7 @@ use std::process::Command;
 
 use serde_json::Value;
 
-pub const PACKAGE: &str = "@opencode/browse";
+pub const PACKAGE: &str = "@sjseo298/browse";
 pub const EXECUTABLE: &str = if cfg!(windows) { "browse.exe" } else { "browse" };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub enum Install {
     Other,
 }
 
-/// A package runner that resolves @opencode/browse itself on every run.
+/// A package runner that resolves @sjseo298/browse itself on every run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Runner {
     Npx,
@@ -34,7 +34,7 @@ pub enum Runner {
     YarnDlx,
 }
 
-/// A global install of @opencode/browse.
+/// A global install of @sjseo298/browse.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Global {
     /// The package folder, as a path that keeps naming the installed package after an update (pnpm's link to it,
@@ -102,7 +102,7 @@ pub fn dist_tag(version: &str) -> &'static str {
     }
 }
 
-/// `@opencode/browse@<tag>`, or just the package for `latest`.
+/// `@sjseo298/browse@<tag>`, or just the package for `latest`.
 fn spec(tag: &str) -> String {
     if tag == "latest" { PACKAGE.into() } else { format!("{PACKAGE}@{tag}") }
 }
@@ -169,7 +169,7 @@ impl Runner {
         }
     }
 
-    /// The command that runs the CLI this way: `npx @opencode/browse@dev`.
+    /// The command that runs the CLI this way: `npx @sjseo298/browse@dev`.
     pub fn run(self, tag: &str) -> String {
         let runner = match self {
             Runner::Npx => "npx",
@@ -202,7 +202,7 @@ impl Manager {
         }
     }
 
-    /// How its install command reads in messages: `bun add -g @opencode/browse@<version>`.
+    /// How its install command reads in messages: `bun add -g @sjseo298/browse@<version>`.
     pub fn words(&self, version: &str) -> String {
         let spec = format!("{PACKAGE}@{version}");
         match self {
@@ -243,7 +243,7 @@ impl Global {
         platform_binary(&self.current_package()?, &self.platform)
     }
 
-    /// The version of @opencode/browse installed now.
+    /// The version of @sjseo298/browse installed now.
     pub fn version(&self) -> Option<String> {
         let manifest: Value = serde_json::from_slice(&std::fs::read(self.current_package()?.join("package.json")).ok()?).ok()?;
         manifest["version"].as_str().map(str::to_owned)
@@ -259,7 +259,7 @@ impl Global {
                 let mut command = npm_command(launcher.node.as_deref());
                 command.args(["install", "--global", "--prefix"]).arg(prefix).args(["--no-fund", "--no-audit", "--no-update-notifier", &spec]);
                 if let Some(registry) = registry {
-                    command.arg(format!("--registry={registry}")).arg(format!("--@opencode:registry={registry}"));
+                    command.arg(format!("--registry={registry}")).arg(format!("--@sjseo298:registry={registry}"));
                 }
                 command
             }
@@ -382,12 +382,22 @@ pub fn platform_binary(package: &Path, platform: &str) -> Option<PathBuf> {
     if cfg!(target_os = "linux") {
         names.push(platform.strip_suffix("-musl").map_or_else(|| format!("{platform}-musl"), str::to_owned));
     }
-    names.iter().find_map(|name| package.ancestors().map(|dir| dir.join("node_modules").join("@opencode").join(name).join("bin").join(EXECUTABLE)).find(|file| file.is_file()))
+    // The fork's packages ship under @sjseo298; pre-fork upstream installs live under @opencode.
+    names.iter().find_map(|name| {
+        package.ancestors().into_iter().find_map(|dir| {
+            ["@sjseo298", "@opencode"].into_iter().find_map(|scope| {
+                let file = dir.join("node_modules").join(scope).join(name).join("bin").join(EXECUTABLE);
+                file.is_file().then_some(file)
+            })
+        })
+    })
 }
 
-/// Whether `package` is an @opencode/browse package folder with the launcher.
+/// Whether `package` is an @sjseo298/browse package folder with the launcher.
 fn is_package(package: &Path) -> bool {
-    named(Some(package), "browse") && named(package.parent(), "@opencode") && package.join("dist").join("cli.mjs").is_file()
+    named(Some(package), "browse")
+        && (named(package.parent(), "@sjseo298") || named(package.parent(), "@opencode"))
+        && package.join("dist").join("cli.mjs").is_file()
 }
 
 /// What kind of install the executable `exe` belongs to; `installed` is the bin folder's executable.
@@ -403,12 +413,13 @@ pub fn detect(exe: &Path, launcher: &Launcher, installed: &Path) -> Install {
     if checkout { Install::Checkout } else { Install::Other }
 }
 
-/// An install of @opencode/browse whose platform package (`node_modules/@opencode/browse-<target>/bin/`) holds `exe`.
+/// An install of @sjseo298/browse whose platform package (`node_modules/@sjseo298/browse-<target>/bin/`) holds `exe`.
 fn package_install(exe: &Path, launcher: &Launcher) -> Option<Install> {
     let bin = exe.parent().filter(|b| named(Some(b), "bin"))?;
     let platform_dir = bin.parent()?;
     let platform = platform_dir.file_name()?.to_str().filter(|n| n.starts_with("browse-"))?.to_owned();
-    let scope = platform_dir.parent().filter(|s| named(Some(s), "@opencode"))?;
+    // Fork installs under @sjseo298, pre-fork upstream installs under @opencode.
+    let scope = platform_dir.parent().filter(|s| named(Some(s), "@sjseo298") || named(Some(s), "@opencode"))?;
     let modules = scope.parent().filter(|m| named(Some(m), "node_modules"))?;
     let runs_this = |package: &Path| is_package(package) && platform_binary(package, &platform).is_some_and(|b| canonical(&b) == exe);
     // The launcher that ran this (its dist/cli.mjs), else the package an older launcher, which doesn't say, runs from:
@@ -417,8 +428,10 @@ fn package_install(exe: &Path, launcher: &Launcher) -> Option<Install> {
     let given = launcher.file.as_deref().and_then(|l| canonical(l).parent()?.parent().map(Path::to_path_buf));
     let mut candidates = vec![given, modules.parent().map(Path::to_path_buf), Some(scope.join("browse"))];
     if let Some(store) = ancestor(modules, ".pnpm").and_then(Path::parent) {
-        candidates.push(Some(canonical(&store.join("node_modules").join("@opencode").join("browse"))));
-        candidates.push(Some(canonical(&store.parent()?.join("node_modules").join("@opencode").join("browse"))));
+        for scope in ["@sjseo298", "@opencode"] {
+            candidates.push(Some(canonical(&store.join("node_modules").join(scope).join("browse"))));
+            candidates.push(Some(canonical(&store.parent()?.join("node_modules").join(scope).join("browse"))));
+        }
     }
     match candidates.into_iter().flatten().find(|package| runs_this(package)) {
         Some(package) => Some(classify(&package, platform, launcher)),
@@ -445,19 +458,19 @@ fn classify(package: &Path, platform: String, launcher: &Launcher) -> Install {
     if has_component(package, |c| c.starts_with("xfs-")) {
         return Install::Runner(Runner::YarnDlx);
     }
-    // volta install: <VOLTA_HOME>/tools/image/packages/@opencode/browse/[lib/]node_modules/@opencode/browse.
+    // volta install: <VOLTA_HOME>/tools/image/packages/@sjseo298/browse/[lib/]node_modules/@sjseo298/browse.
     if let Some(packages) = ancestor(package, "packages").filter(|p| named(p.parent(), "image") && named(p.parent().and_then(Path::parent), "tools")) {
         let home = packages.ancestors().nth(3).map(Path::to_path_buf);
         return home.map_or(Install::Other, |home| global(package.to_path_buf(), Manager::Volta { home }));
     }
-    // pnpm 11's global virtual store: <PNPM_HOME>/store/v11/links/@opencode/browse/<version>/<hash>/node_modules/@opencode/browse,
-    // linked from <PNPM_HOME>/global/v11/<install>/node_modules/@opencode/browse. pnpm dlx links the same store from its cache.
+    // pnpm 11's global virtual store: <PNPM_HOME>/store/v11/links/@sjseo298/browse/<version>/<hash>/node_modules/@sjseo298/browse,
+    // linked from <PNPM_HOME>/global/v11/<install>/node_modules/@sjseo298/browse. pnpm dlx links the same store from its cache.
     if let Some(homes) = pnpm_store_home(package) {
         let found = homes.into_iter().find_map(|home| Some((pnpm_globals(&home).into_iter().find(|entry| canonical(entry) == package)?, home)));
         return found.map_or(Install::Runner(Runner::PnpmDlx), |(entry, home)| global(entry, Manager::Pnpm { home }));
     }
-    // pnpm before 11: <PNPM_HOME>/global/5/[node_modules/].pnpm/@opencode+browse@<version>/node_modules/@opencode/browse,
-    // linked from <PNPM_HOME>/global/5/node_modules/@opencode/browse; pnpm dlx's under <cache>/pnpm/dlx/.
+    // pnpm before 11: <PNPM_HOME>/global/5/[node_modules/].pnpm/@opencode+browse@<version>/node_modules/@sjseo298/browse,
+    // linked from <PNPM_HOME>/global/5/node_modules/@sjseo298/browse; pnpm dlx's under <cache>/pnpm/dlx/.
     if let Some(store) = ancestor(package, ".pnpm").and_then(Path::parent) {
         if has_component(store, |c| c == "dlx") {
             return Install::Runner(Runner::PnpmDlx);
@@ -465,7 +478,9 @@ fn classify(package: &Path, platform: String, launcher: &Launcher) -> Install {
         let root = if named(Some(store), "node_modules") { store.parent() } else { Some(store) };
         let Some(root) = root.filter(|r| named(r.parent(), "global")) else { return Install::Other };
         let home = root.parent().and_then(Path::parent).map(Path::to_path_buf);
-        return home.map_or(Install::Other, |home| global(root.join("node_modules").join("@opencode").join("browse"), Manager::Pnpm { home }));
+        let link = |scope: &str| root.join("node_modules").join(scope).join("browse");
+        let entry = if link("@sjseo298").exists() { link("@sjseo298") } else { link("@opencode") };
+        return home.map_or(Install::Other, |home| global(entry, Manager::Pnpm { home }));
     }
     let Some(modules) = package.parent().and_then(Path::parent).filter(|m| named(Some(m), "node_modules")) else { return Install::Other };
     let Some(folder) = modules.parent() else { return Install::Other };
@@ -515,23 +530,29 @@ fn pnpm_store_home(path: &Path) -> Option<Vec<PathBuf>> {
     Some(homes)
 }
 
-/// The @opencode/browse links of pnpm's global installs under `home`: `global/<layout>/node_modules/...` before
+/// The @sjseo298/browse links of pnpm's global installs under `home`: `global/<layout>/node_modules/...` before
 /// pnpm 11, `global/v11/<install>/node_modules/...` since, the stable alias links to an install folder first.
 fn pnpm_globals(home: &Path) -> Vec<PathBuf> {
-    let link = |dir: &Path| dir.join("node_modules").join("@opencode").join("browse");
+    // The fork's global links live under @sjseo298; pre-fork upstream installs under @opencode.
+    let link = |dir: &Path| -> Option<PathBuf> {
+        ["@sjseo298", "@opencode"]
+            .into_iter()
+            .map(|scope| dir.join("node_modules").join(scope).join("browse"))
+            .find(|p| p.exists())
+    };
     let mut found: Vec<(bool, PathBuf)> = Vec::new();
     let Ok(layouts) = std::fs::read_dir(home.join("global")) else { return Vec::new() };
     for layout in layouts.flatten().map(|e| e.path()) {
-        if link(&layout).exists() {
-            found.push((false, link(&layout)));
+        if let Some(link) = link(&layout) {
+            found.push((false, link));
             continue;
         }
         let Ok(installs) = std::fs::read_dir(&layout) else { continue };
         for install in installs.flatten() {
             let path = install.path();
-            if link(&path).exists() {
+            if let Some(link) = link(&path) {
                 let alias = install.file_type().is_ok_and(|t| t.is_symlink());
-                found.push((!alias, link(&path)));
+                found.push((!alias, link));
             }
         }
     }
@@ -571,12 +592,12 @@ mod tests {
             std::fs::write(&file, text).unwrap();
             file
         }
-        /// @opencode/browse at `rel`: its launcher (returned) and package.json.
+        /// @sjseo298/browse at `rel`: its launcher (returned) and package.json.
         fn package(&self, rel: &str) -> PathBuf {
-            self.file(&format!("{rel}/package.json"), &format!("{{\"name\":\"@opencode/browse\",\"version\":\"{V}\"}}"));
+            self.file(&format!("{rel}/package.json"), &format!("{{\"name\":\"@sjseo298/browse\",\"version\":\"{V}\"}}"));
             self.file(&format!("{rel}/dist/cli.mjs"), "")
         }
-        /// The platform package at `rel` (a `.../@opencode/browse-linux-x64` folder): its binary.
+        /// The platform package at `rel` (a `.../@sjseo298/browse-linux-x64` folder): its binary.
         fn platform(&self, rel: &str) -> PathBuf {
             self.file(&format!("{rel}/bin/{EXECUTABLE}"), "")
         }
@@ -614,11 +635,11 @@ mod tests {
     /// An npm global install under `prefix`, its platform package nested (npm 7+) or hoisted, with npm's bin link.
     #[cfg(unix)]
     fn npm(tree: &Tree, prefix: &str, hoisted: bool) -> (PathBuf, PathBuf, &'static str) {
-        let package = format!("{prefix}/lib/node_modules/@opencode/browse");
+        let package = format!("{prefix}/lib/node_modules/@sjseo298/browse");
         let launcher = tree.package(&package);
         let platform = if hoisted { format!("{prefix}/lib/node_modules/@opencode/{P}") } else { format!("{package}/node_modules/@opencode/{P}") };
         let binary = tree.platform(&platform);
-        tree.link(&format!("{prefix}/bin/browse"), "../lib/node_modules/@opencode/browse/dist/cli.mjs");
+        tree.link(&format!("{prefix}/bin/browse"), "../lib/node_modules/@sjseo298/browse/dist/cli.mjs");
         (launcher, binary, "npm")
     }
 
@@ -630,7 +651,7 @@ mod tests {
         let mut cases: Vec<Case> = Vec::new();
         let npm_case = |cases: &mut Vec<Case>, case: &'static str, prefix: &str, hoisted: bool| {
             let (launcher, binary, method) = npm(&tree, prefix, hoisted);
-            cases.push((case, launcher, binary, method, Some(prefix.to_owned()), Some(format!("{prefix}/lib/node_modules/@opencode/browse"))));
+            cases.push((case, launcher, binary, method, Some(prefix.to_owned()), Some(format!("{prefix}/lib/node_modules/@sjseo298/browse"))));
         };
         npm_case(&mut cases, "npm, node's own prefix", "usr", false);
         npm_case(&mut cases, "npm, hoisted platform package", "usr-local", true);
@@ -642,69 +663,69 @@ mod tests {
         npm_case(&mut cases, "npm with Linuxbrew's node", "home/linuxbrew/.linuxbrew", false);
         npm_case(&mut cases, "npm with NPM_CONFIG_PREFIX", "home/.npm-global", false);
 
-        // volta install @opencode/browse (also what `npm i -g` does under volta).
-        let image = "home/.volta/tools/image/packages/@opencode/browse/lib/node_modules/@opencode/browse";
+        // volta install @sjseo298/browse (also what `npm i -g` does under volta).
+        let image = "home/.volta/tools/image/packages/@sjseo298/browse/lib/node_modules/@sjseo298/browse";
         let launcher = tree.package(image);
         let binary = tree.platform(&format!("{image}/node_modules/@opencode/{P}"));
-        tree.link("home/.volta/tools/image/packages/@opencode/browse/bin/browse", "../lib/node_modules/@opencode/browse/dist/cli.mjs");
+        tree.link("home/.volta/tools/image/packages/@sjseo298/browse/bin/browse", "../lib/node_modules/@sjseo298/browse/dist/cli.mjs");
         cases.push(("volta", launcher, binary, "volta", Some("home/.volta".into()), Some(image.into())));
 
         // bun add -g: $BUN_INSTALL/install/global, platform package hoisted.
         let global = "home/.bun/install/global";
         tree.file(&format!("{global}/package.json"), "{}");
         tree.file(&format!("{global}/bun.lock"), "{}");
-        let launcher = tree.package(&format!("{global}/node_modules/@opencode/browse"));
+        let launcher = tree.package(&format!("{global}/node_modules/@sjseo298/browse"));
         let binary = tree.platform(&format!("{global}/node_modules/@opencode/{P}"));
-        cases.push(("bun", launcher, binary, "bun", Some("home/.bun".into()), Some(format!("{global}/node_modules/@opencode/browse"))));
+        cases.push(("bun", launcher, binary, "bun", Some("home/.bun".into()), Some(format!("{global}/node_modules/@sjseo298/browse"))));
 
         // yarn global add (classic): its global folder with package.json and yarn.lock, hoisted.
         for (case, folder) in [("yarn, XDG data", "home/.local/share/yarn/global"), ("yarn, ~/.config", "home/.config/yarn/global"), ("yarn, Windows", "home/AppData/Local/Yarn/Data/global")] {
             tree.file(&format!("{folder}/package.json"), "{}");
             tree.file(&format!("{folder}/yarn.lock"), "");
-            let launcher = tree.package(&format!("{folder}/node_modules/@opencode/browse"));
+            let launcher = tree.package(&format!("{folder}/node_modules/@sjseo298/browse"));
             let binary = tree.platform(&format!("{folder}/node_modules/@opencode/{P}"));
-            cases.push((case, launcher, binary, "yarn", Some(folder.into()), Some(format!("{folder}/node_modules/@opencode/browse"))));
+            cases.push((case, launcher, binary, "yarn", Some(folder.into()), Some(format!("{folder}/node_modules/@sjseo298/browse"))));
         }
 
         // pnpm 10: $PNPM_HOME/global/5/.pnpm, linked from global/5/node_modules.
         let store = "pnpm10/global/5/.pnpm";
-        let launcher = tree.package(&format!("{store}/@opencode+browse@{V}/node_modules/@opencode/browse"));
+        let launcher = tree.package(&format!("{store}/@opencode+browse@{V}/node_modules/@sjseo298/browse"));
         let binary = tree.platform(&format!("{store}/@opencode+{P}@{V}/node_modules/@opencode/{P}"));
         tree.link(&format!("{store}/@opencode+browse@{V}/node_modules/@opencode/{P}"), &format!("../../../@opencode+{P}@{V}/node_modules/@opencode/{P}"));
-        tree.link("pnpm10/global/5/node_modules/@opencode/browse", &format!("../../.pnpm/@opencode+browse@{V}/node_modules/@opencode/browse"));
-        cases.push(("pnpm 10", launcher, binary.clone(), "pnpm", Some("pnpm10".into()), Some("pnpm10/global/5/node_modules/@opencode/browse".into())));
-        cases.push(("pnpm 10, older launcher", PathBuf::new(), binary, "pnpm", Some("pnpm10".into()), Some("pnpm10/global/5/node_modules/@opencode/browse".into())));
+        tree.link("pnpm10/global/5/node_modules/@sjseo298/browse", &format!("../../.pnpm/@opencode+browse@{V}/node_modules/@sjseo298/browse"));
+        cases.push(("pnpm 10", launcher, binary.clone(), "pnpm", Some("pnpm10".into()), Some("pnpm10/global/5/node_modules/@sjseo298/browse".into())));
+        cases.push(("pnpm 10, older launcher", PathBuf::new(), binary, "pnpm", Some("pnpm10".into()), Some("pnpm10/global/5/node_modules/@sjseo298/browse".into())));
 
         // pnpm 9 and earlier: global/5/node_modules/.pnpm.
         let store = "pnpm9/global/5/node_modules/.pnpm";
-        let launcher = tree.package(&format!("{store}/@opencode+browse@{V}/node_modules/@opencode/browse"));
+        let launcher = tree.package(&format!("{store}/@opencode+browse@{V}/node_modules/@sjseo298/browse"));
         let binary = tree.platform(&format!("{store}/@opencode+{P}@{V}/node_modules/@opencode/{P}"));
         tree.link(&format!("{store}/@opencode+browse@{V}/node_modules/@opencode/{P}"), &format!("../../../@opencode+{P}@{V}/node_modules/@opencode/{P}"));
-        tree.link("pnpm9/global/5/node_modules/@opencode/browse", &format!("../.pnpm/@opencode+browse@{V}/node_modules/@opencode/browse"));
-        cases.push(("pnpm 9", launcher, binary.clone(), "pnpm", Some("pnpm9".into()), Some("pnpm9/global/5/node_modules/@opencode/browse".into())));
-        cases.push(("pnpm 9, older launcher", PathBuf::new(), binary, "pnpm", Some("pnpm9".into()), Some("pnpm9/global/5/node_modules/@opencode/browse".into())));
+        tree.link("pnpm9/global/5/node_modules/@sjseo298/browse", &format!("../.pnpm/@opencode+browse@{V}/node_modules/@sjseo298/browse"));
+        cases.push(("pnpm 9", launcher, binary.clone(), "pnpm", Some("pnpm9".into()), Some("pnpm9/global/5/node_modules/@sjseo298/browse".into())));
+        cases.push(("pnpm 9, older launcher", PathBuf::new(), binary, "pnpm", Some("pnpm9".into()), Some("pnpm9/global/5/node_modules/@sjseo298/browse".into())));
 
         // pnpm 11: the global virtual store in $PNPM_HOME/store/v11/links, linked from global/v11/<install>, which a
         // stable alias names; the platform package is a sibling link to its own store folder.
         let links = "pnpm11/store/v11/links/@opencode";
-        let package = format!("{links}/browse/{V}/aaa/node_modules/@opencode/browse");
+        let package = format!("{links}/browse/{V}/aaa/node_modules/@sjseo298/browse");
         let launcher = tree.package(&package);
         let binary = tree.platform(&format!("{links}/{P}/{V}/bbb/node_modules/@opencode/{P}"));
         tree.link(&format!("{links}/browse/{V}/aaa/node_modules/@opencode/{P}"), &format!("../../../../../{P}/{V}/bbb/node_modules/@opencode/{P}"));
-        tree.link("pnpm11/global/v11/3ee71c-1a1dd/node_modules/@opencode/browse", &format!("../../../../../store/v11/links/@opencode/browse/{V}/aaa/node_modules/@opencode/browse"));
+        tree.link("pnpm11/global/v11/3ee71c-1a1dd/node_modules/@sjseo298/browse", &format!("../../../../../store/v11/links/@sjseo298/browse/{V}/aaa/node_modules/@sjseo298/browse"));
         tree.link("pnpm11/global/v11/770e7348", "3ee71c-1a1dd");
-        let alias = "pnpm11/global/v11/770e7348/node_modules/@opencode/browse";
+        let alias = "pnpm11/global/v11/770e7348/node_modules/@sjseo298/browse";
         cases.push(("pnpm 11", launcher, binary.clone(), "pnpm", Some("pnpm11".into()), Some(alias.into())));
         cases.push(("pnpm 11, older launcher", PathBuf::new(), binary.clone(), "pnpm", Some("pnpm11".into()), Some(alias.into())));
         // pnpm dlx links the same store (its own browse folder, the same platform package) from its cache.
-        let dlx = format!("{links}/browse/{V}/ccc/node_modules/@opencode/browse");
+        let dlx = format!("{links}/browse/{V}/ccc/node_modules/@sjseo298/browse");
         let launcher = tree.package(&dlx);
         tree.link(&format!("{links}/browse/{V}/ccc/node_modules/@opencode/{P}"), &format!("../../../../../{P}/{V}/bbb/node_modules/@opencode/{P}"));
         cases.push(("pnpm 11 dlx", launcher, binary, "pnpm-dlx", None, None));
 
         // pnpm 10 dlx: <cache>/pnpm/dlx/<hash>/<id>/node_modules/.pnpm.
         let store = "home/.cache/pnpm/dlx/e432/1a1d-3f05/node_modules/.pnpm";
-        let launcher = tree.package(&format!("{store}/@opencode+browse@{V}/node_modules/@opencode/browse"));
+        let launcher = tree.package(&format!("{store}/@opencode+browse@{V}/node_modules/@sjseo298/browse"));
         let binary = tree.platform(&format!("{store}/@opencode+{P}@{V}/node_modules/@opencode/{P}"));
         tree.link(&format!("{store}/@opencode+browse@{V}/node_modules/@opencode/{P}"), &format!("../../../@opencode+{P}@{V}/node_modules/@opencode/{P}"));
         cases.push(("pnpm 10 dlx", launcher, binary, "pnpm-dlx", None, None));
@@ -712,11 +733,11 @@ mod tests {
         // npx, bunx and yarn dlx: their temporary installs.
         for (case, modules, method) in [
             ("npx", "home/.npm/_npx/4d2a/node_modules", "npx"),
-            ("bunx", "tmp/bunx-1000-@opencode/browse@dev/node_modules", "bunx"),
+            ("bunx", "tmp/bunx-1000-@sjseo298/browse@dev/node_modules", "bunx"),
             ("yarn dlx", "tmp/xfs-1a2b3c/dlx-4242/node_modules", "yarn-dlx"),
             ("a project's node_modules", "project/node_modules", "other"),
         ] {
-            let launcher = tree.package(&format!("{modules}/@opencode/browse"));
+            let launcher = tree.package(&format!("{modules}/@sjseo298/browse"));
             let binary = tree.platform(&format!("{modules}/@opencode/{P}"));
             cases.push((case, launcher, binary, method, None, None));
         }
@@ -744,10 +765,10 @@ mod tests {
         assert_eq!(detect(&tree.file("checkout/rust/target/x86_64-unknown-linux-musl/release/browse", ""), &Launcher::default(), &installed), Install::Checkout);
         assert_eq!(detect(&tree.file("Downloads/browse", ""), &Launcher::default(), &installed), Install::Other);
         // A launcher that isn't the one running this binary (an inherited variable) doesn't make it a package's.
-        let launcher = tree.package("usr/lib/node_modules/@opencode/browse");
+        let launcher = tree.package("usr/lib/node_modules/@sjseo298/browse");
         assert_eq!(detect(&tree.file("elsewhere/browse", ""), &launched(&launcher), &installed), Install::Other);
         // bun's folder layout without bun's package.json isn't bun's.
-        let launcher = tree.package("somewhere/install/global/node_modules/@opencode/browse");
+        let launcher = tree.package("somewhere/install/global/node_modules/@sjseo298/browse");
         let binary = tree.platform(&format!("somewhere/install/global/node_modules/@opencode/{P}"));
         assert_eq!(detect(&binary, &launched(&launcher), &installed), Install::Other);
     }
@@ -761,7 +782,7 @@ mod tests {
         // npm picked the other libc's package this time.
         std::fs::remove_dir_all(binary.parent().unwrap().parent().unwrap()).unwrap();
         assert_eq!(npm.binary(), None);
-        let musl = tree.platform(&format!("prefix/lib/node_modules/@opencode/browse/node_modules/@opencode/{P}-musl"));
+        let musl = tree.platform(&format!("prefix/lib/node_modules/@sjseo298/browse/node_modules/@opencode/{P}-musl"));
         assert_eq!(npm.binary(), cfg!(target_os = "linux").then_some(musl));
     }
 
@@ -774,7 +795,7 @@ mod tests {
     }
 
     fn global(manager: Manager, launcher: Launcher) -> Global {
-        Global { package: PathBuf::from("/x/@opencode/browse"), platform: P.into(), manager, launcher }
+        Global { package: PathBuf::from("/x/@sjseo298/browse"), platform: P.into(), manager, launcher }
     }
 
     #[test]
@@ -786,14 +807,14 @@ mod tests {
         let npm = global(Manager::Npm { prefix: "/p".into() }, Launcher::default());
         let command = npm.command("0.2.0", Some("http://r"));
         assert_eq!(command.get_program(), shim("npm").as_str());
-        assert_eq!(args(&command), ["install", "--global", "--prefix", "/p", "--no-fund", "--no-audit", "--no-update-notifier", "@opencode/browse@0.2.0", "--registry=http://r", "--@opencode:registry=http://r"]);
+        assert_eq!(args(&command), ["install", "--global", "--prefix", "/p", "--no-fund", "--no-audit", "--no-update-notifier", "@sjseo298/browse@0.2.0", "--registry=http://r", "--@sjseo298:registry=http://r"]);
 
         // bun: the bun that ran the launcher, else the bun folder's own, else PATH; always into that folder.
         let root = tree.path(".bun");
         let bun = |ran: Option<PathBuf>| global(Manager::Bun { root: root.clone() }, Launcher { bun: ran, ..Launcher::default() });
         let command = bun(None).command("0.2.0", None);
         assert_eq!(command.get_program(), exe("bun").as_str());
-        assert_eq!(args(&command), ["add", "--global", "--no-progress", "@opencode/browse@0.2.0"]);
+        assert_eq!(args(&command), ["add", "--global", "--no-progress", "@sjseo298/browse@0.2.0"]);
         assert_eq!(env(&command, "BUN_INSTALL"), Some(root.clone()));
         let own = tree.file(&format!(".bun/bin/{}", exe("bun")), "");
         assert_eq!(bun(None).command("0.2.0", Some("http://r")).get_program(), own.as_os_str());
@@ -809,7 +830,7 @@ mod tests {
         let pnpm = |launcher: Launcher| global(Manager::Pnpm { home: home.clone() }, launcher);
         let command = pnpm(Launcher::default()).command("0.2.0", Some("http://r"));
         assert_eq!(command.get_program(), shim("pnpm").as_str());
-        assert_eq!(args(&command), ["add", "--global", "@opencode/browse@0.2.0", "--registry=http://r"]);
+        assert_eq!(args(&command), ["add", "--global", "@sjseo298/browse@0.2.0", "--registry=http://r"]);
         assert_eq!(env(&command, "PNPM_HOME"), Some(home.clone()));
         let path = env(&command, "PATH").unwrap();
         assert_eq!(std::env::split_paths(&path).take(2).collect::<Vec<_>>(), [home.join("bin"), home.clone()]);
@@ -831,12 +852,12 @@ mod tests {
         let yarn = global(Manager::Yarn { folder: folder.clone() }, Launcher::default());
         let command = yarn.command("0.2.0", Some("http://r"));
         assert_eq!(command.get_program(), shim("yarn").as_str());
-        assert_eq!(args(&command), ["global", "add", "@opencode/browse@0.2.0", "--global-folder", folder.to_str().unwrap(), "--non-interactive", "--no-progress", "--registry", "http://r"]);
+        assert_eq!(args(&command), ["global", "add", "@sjseo298/browse@0.2.0", "--global-folder", folder.to_str().unwrap(), "--non-interactive", "--no-progress", "--registry", "http://r"]);
 
         // volta: VOLTA_HOME's volta.
         let home = tree.path(".volta");
         let volta = global(Manager::Volta { home: home.clone() }, Launcher::default());
-        assert_eq!(args(&volta.command("0.2.0", None)), ["install", "@opencode/browse@0.2.0"]);
+        assert_eq!(args(&volta.command("0.2.0", None)), ["install", "@sjseo298/browse@0.2.0"]);
         assert_eq!(volta.command("0.2.0", None).get_program(), exe("volta").as_str());
         let own = tree.file(&format!(".volta/bin/{}", exe("volta")), "");
         assert_eq!(volta.command("0.2.0", None).get_program(), own.as_os_str());
@@ -849,22 +870,22 @@ mod tests {
         let global = |manager| Install::Global(global(manager, Launcher::default()));
         let table = [
             (Install::Binary("/b".into()), "binary", "binary", "browse update"),
-            (global(Manager::Npm { prefix: "/p".into() }), "npm", "npm", "npm install -g @opencode/browse@dev"),
-            (global(Manager::Bun { root: "/b".into() }), "bun", "binary", "bun add -g @opencode/browse@dev"),
-            (global(Manager::Pnpm { home: "/p".into() }), "pnpm", "binary", "pnpm add -g @opencode/browse@dev"),
-            (global(Manager::Yarn { folder: "/y".into() }), "yarn", "binary", "yarn global add @opencode/browse@dev"),
-            (global(Manager::Volta { home: "/v".into() }), "volta", "binary", "volta install @opencode/browse@dev"),
-            (Install::Runner(Runner::Npx), "npx", "npx", "npx @opencode/browse@dev install"),
-            (Install::Runner(Runner::Bunx), "bunx", "npx", "bunx @opencode/browse@dev install"),
-            (Install::Runner(Runner::PnpmDlx), "pnpm-dlx", "npx", "pnpm dlx @opencode/browse@dev install"),
-            (Install::Runner(Runner::YarnDlx), "yarn-dlx", "npx", "yarn dlx @opencode/browse@dev install"),
+            (global(Manager::Npm { prefix: "/p".into() }), "npm", "npm", "npm install -g @sjseo298/browse@dev"),
+            (global(Manager::Bun { root: "/b".into() }), "bun", "binary", "bun add -g @sjseo298/browse@dev"),
+            (global(Manager::Pnpm { home: "/p".into() }), "pnpm", "binary", "pnpm add -g @sjseo298/browse@dev"),
+            (global(Manager::Yarn { folder: "/y".into() }), "yarn", "binary", "yarn global add @sjseo298/browse@dev"),
+            (global(Manager::Volta { home: "/v".into() }), "volta", "binary", "volta install @sjseo298/browse@dev"),
+            (Install::Runner(Runner::Npx), "npx", "npx", "npx @sjseo298/browse@dev install"),
+            (Install::Runner(Runner::Bunx), "bunx", "npx", "bunx @sjseo298/browse@dev install"),
+            (Install::Runner(Runner::PnpmDlx), "pnpm-dlx", "npx", "pnpm dlx @sjseo298/browse@dev install"),
+            (Install::Runner(Runner::YarnDlx), "yarn-dlx", "npx", "yarn dlx @sjseo298/browse@dev install"),
             (Install::Checkout, "checkout", "checkout", "/somewhere/browse update"),
             (Install::Other, "other", "other", "/somewhere/browse install"),
         ];
         for (install, method, compatible, command) in table {
             assert_eq!((install.name(), install.compatible_name(), install.update_command("0.2.0-dev.4", exe).as_str()), (method, compatible, command));
         }
-        assert_eq!(Install::Runner(Runner::Npx).update_command("0.2.0", exe), "npx @opencode/browse install");
-        assert_eq!(Runner::Bunx.global_words("dev"), "bun add -g @opencode/browse@dev");
+        assert_eq!(Install::Runner(Runner::Npx).update_command("0.2.0", exe), "npx @sjseo298/browse install");
+        assert_eq!(Runner::Bunx.global_words("dev"), "bun add -g @sjseo298/browse@dev");
     }
 }

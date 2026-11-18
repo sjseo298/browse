@@ -1,7 +1,7 @@
 #!/bin/sh
-# Installs browse: downloads the browse binary for this computer from Anomaly's release service into ~/.local/bin
+# Installs browse: downloads the browse binary for this computer from the release service into ~/.local/bin
 # ($XDG_BIN_HOME when set), then hands over to `browse install`, which does the rest (PATH, your agents, pairing with your
-# browser). Served at https://opencode.ai/browse/install. Platform detection follows opencode's installer.
+# browser). Served at https://sjseo298.github.io/browse/install. Platform detection follows opencode's installer.
 set -eu
 APP=browse
 
@@ -26,10 +26,10 @@ Options:
 Anything else goes to \`browse install\`, e.g. --remote, --agent claude or --no-modify-path.
 
 Examples:
-    curl -fsSL https://opencode.ai/browse/install | bash
-    curl -fsSL https://opencode.ai/browse/install | bash -s -- --remote
-    curl -fsSL https://opencode.ai/browse/install | bash -s -- --channel dev
-    curl -fsSL https://opencode.ai/browse/install | bash -s -- --version 0.0.7
+    curl -fsSL https://sjseo298.github.io/browse/install | bash
+    curl -fsSL https://sjseo298.github.io/browse/install | bash -s -- --remote
+    curl -fsSL https://sjseo298.github.io/browse/install | bash -s -- --channel dev
+    curl -fsSL https://sjseo298.github.io/browse/install | bash -s -- --version 0.0.7
 EOF
 }
 
@@ -260,7 +260,7 @@ else
         exit 1
     fi
 
-    package="@opencode/browse-$target"
+    package="@sjseo298/browse-$target"
     encoded="@opencode%2fbrowse-$target"
     # A pinned version comes from npm: the release service has one current release per channel and no version lookup.
     if [ -n "$requested_version" ]; then
@@ -417,10 +417,10 @@ download_npm() (
     rm -rf "$tmp_dir"
 )
 
-# The channel's current release from the Anomaly release service (https://anoma.ly/release, anomalyco/release
+# The channel's current release from the release service (release-protocol spec: anomalyco/release
 # docs/protocol.md). The manifest names the file for this target; its size and SHA-256 must match before it is used.
 download_release() (
-    service="${OPENCODE_BROWSER_RELEASE_SERVICE:-https://anoma.ly/release}"
+    service="${OPENCODE_BROWSER_RELEASE_SERVICE:-https://sjseo298.github.io/browse/release}"
     service="${service%/}"
     case "$service" in
         */release) origin="${service%/release}" ;;

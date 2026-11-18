@@ -272,7 +272,7 @@ pub fn command_line(server: &Value) -> Vec<String> {
 }
 
 /// Whether a server entry runs a browse MCP server some install wrote: `<browse> mcp`, `node <.../cli.mjs> mcp` or
-/// `npx @opencode/browse mcp`.
+/// `npx @sjseo298/browse mcp`.
 pub fn owned(server: &Value) -> bool {
     let line = command_line(server);
     if line.len() < 2 || line.last().map(String::as_str) != Some("mcp") {
@@ -280,7 +280,7 @@ pub fn owned(server: &Value) -> bool {
     }
     line[..line.len() - 1].iter().any(|part| {
         let name = Path::new(part).file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        ["browse", "browse.exe", "browse.cmd", "cli.mjs", "opencode-browser.mjs", "opencode-browser"].contains(&name) || part.starts_with("@opencode/browse")
+        ["browse", "browse.exe", "browse.cmd", "cli.mjs", "opencode-browser.mjs", "opencode-browser"].contains(&name) || part.starts_with("@sjseo298/browse")
     })
 }
 
@@ -798,8 +798,8 @@ mod tests {
     #[test]
     fn owned_entries() {
         assert!(owned(&json!({ "command": "/home/u/.local/bin/browse", "args": ["mcp"] })));
-        assert!(owned(&json!({ "command": "node", "args": ["/x/@opencode/browse/dist/cli.mjs", "mcp"] })));
-        assert!(owned(&json!({ "command": "npx", "args": ["-y", "@opencode/browse@dev", "mcp"] })));
+        assert!(owned(&json!({ "command": "node", "args": ["/x/@sjseo298/browse/dist/cli.mjs", "mcp"] })));
+        assert!(owned(&json!({ "command": "npx", "args": ["-y", "@sjseo298/browse@dev", "mcp"] })));
         assert!(owned(&json!({ "type": "local", "command": ["browse", "mcp"] })));
         assert!(owned(&json!({ "cmd": "browse", "args": ["mcp"] })));
         assert!(!owned(&json!({ "command": "playwright-mcp", "args": [] })));

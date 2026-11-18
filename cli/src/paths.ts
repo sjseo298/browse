@@ -91,9 +91,9 @@ export function fromCheckout(): boolean {
 /** A standalone executable (script/compile.ts), which the install script puts in ~/.local/bin; not Node and npm. */
 export const compiledBinary = (): boolean => globalThis.__OPENCODE_BROWSER_COMPILED__ === true
 
-/** The npm package that carries this executable's platform build, e.g. @opencode/browse-darwin-arm64. */
+/** The npm package that carries this executable's platform build, e.g. @sjseo298/browse-darwin-arm64. */
 export const binaryPackage = (): string | undefined =>
-  globalThis.__OPENCODE_BROWSER_TARGET__ ? `@opencode/browse-${globalThis.__OPENCODE_BROWSER_TARGET__}` : undefined
+  globalThis.__OPENCODE_BROWSER_TARGET__ ? `@sjseo298/browse-${globalThis.__OPENCODE_BROWSER_TARGET__}` : undefined
 
 /** The executable's file name in its package (package/bin/) and in an installed version's directory. */
 export const binaryName = (platform: NodeJS.Platform = process.platform) => (platform === "win32" ? "browse.exe" : "browse")
@@ -213,7 +213,7 @@ export function cliInstall(): CliInstall {
 
 /**
  * The command that runs browse in a terminal: `browse` for a binary or global npm install on PATH (install adds the
- * binary's folder), the executable's full path when it isn't on PATH, `npx @opencode/browse` (`@dev` on the dev
+ * binary's folder), the executable's full path when it isn't on PATH, `npx @sjseo298/browse` (`@dev` on the dev
  * channel) for an npx run, and this checkout's bundle from a checkout, where the package may not be published.
  */
 export function cliPrefix(install: CliInstall = cliInstall()): string {
@@ -223,7 +223,7 @@ export function cliPrefix(install: CliInstall = cliInstall()): string {
     return onPath ? "browse" : quoted(install.binary)
   }
   if (install.kind === "checkout") return `node ${quoted(install.bundle)}`
-  if (install.npx) return install.version?.includes("-dev.") ? "npx @opencode/browse@dev" : "npx @opencode/browse"
+  if (install.npx) return install.version?.includes("-dev.") ? "npx @sjseo298/browse@dev" : "npx @sjseo298/browse"
   return "browse"
 }
 
@@ -266,8 +266,8 @@ export function storeConfig(env: NodeJS.ProcessEnv = process.env, baked = global
 /** The unpacked extension zip a dev build was built with: content-addressed on the release service, so exactly these bytes. */
 export type DevExtension = { readonly file: string; readonly sha256: string; readonly size: number }
 
-/** Anomaly's release service (github.com/anomalyco/release), where every push to dev publishes the dev extension. */
-export const RELEASE_SERVICE = "https://anoma.ly/release"
+/** The fork's release service (release-protocol spec: github.com/anomalyco/release), where every push to dev publishes the dev extension. */
+export const RELEASE_SERVICE = "https://sjseo298.github.io/browse/release"
 
 /** The dev extension this package was built with; undefined for stable releases and checkouts. */
 export function devExtension(baked = globalThis.__OPENCODE_BROWSER_EXTENSION__): DevExtension | undefined {

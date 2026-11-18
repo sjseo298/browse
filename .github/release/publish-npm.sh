@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # publish-npm.sh <build dir> <binaries dir> [<macOS signed dir>] [<Windows signed dir>]: publishes the platform packages
-# @opencode/browse-<target> (opencode-browse-<target>-<version>.tgz: package/bin/browse, which the install script
-# downloads), then opencode-browse-<version>.tgz (@opencode/browse, the npx package), all with BROWSE_NPM_TAG. Names, the
+# @sjseo298/browse-<target> (opencode-browse-<target>-<version>.tgz: package/bin/browse, which the install script
+# downloads), then opencode-browse-<version>.tgz (@sjseo298/browse, the npx package), all with BROWSE_NPM_TAG. Names, the
 # version and the package set come from this script and the environment, never from the tarballs: each package.json is
 # read as data and must match. With a signed dir (sign-macos.sh, repack-windows.sh), the macOS and Windows packages must
 # come from it. Lifecycle scripts never run (--ignore-scripts). npm authenticates with trusted publishing (OIDC); there
@@ -41,17 +41,17 @@ for target in $targets; do
   if [ -n "$signed_dir" ] && [ "$os" = darwin ]; then dir=$signed_dir; fi
   if [ -n "$signed_windows_dir" ] && [ "$os" = win32 ]; then dir=$signed_windows_dir; fi
   file="$dir/opencode-browse-$target-$BROWSE_VERSION.tgz"
-  check_package "$file" "@opencode/browse-$target" "$os" "$arch" "$libc"
+  check_package "$file" "@sjseo298/browse-$target" "$os" "$arch" "$libc"
   # Exactly the binary (executable), package.json and LICENSE, as the install script expects.
   entries=$(tar -tvzf "$file" | awk '{print $1, $NF}' | LC_ALL=C sort)
   expected=$(printf '%s\n' "-rw-r--r-- package/LICENSE" "-rw-r--r-- package/package.json" "-rwxr-xr-x package/bin/$executable" | LC_ALL=C sort)
   [ "$entries" = "$expected" ] || die "$file holds $entries"
-  printf '%s\t%s\n' "@opencode/browse-$target" "$file" >> "$list"
+  printf '%s\t%s\n' "@sjseo298/browse-$target" "$file" >> "$list"
 done
-# @opencode/browse goes last, once every binary of its version is on npm.
+# @sjseo298/browse goes last, once every binary of its version is on npm.
 file="$build_dir/opencode-browse-$BROWSE_VERSION.tgz"
-check_package "$file" @opencode/browse
-printf '%s\t%s\n' @opencode/browse "$file" >> "$list"
+check_package "$file" @sjseo298/browse
+printf '%s\t%s\n' @sjseo298/browse "$file" >> "$list"
 
 # A clean directory and config, so nothing from an artifact can redirect the registry.
 printf 'registry=https://registry.npmjs.org/\n' > "$RUNNER_TEMP/npmrc"

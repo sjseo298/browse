@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "OpenCode Browse",
+  "name": "sjseo298 Browse",
   "description": "Lets your coding agent use your real browser: open and drive tabs, take screenshots, and hand logins back to you.",
   "version": "0.1.5",
   "minimum_chrome_version": "125",
@@ -12,7 +12,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "OpenCode Browse · Click to let agents use this tab",
+    "default_title": "sjseo298 Browse · Click to let agents use this tab",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png"

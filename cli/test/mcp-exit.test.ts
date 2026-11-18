@@ -19,7 +19,7 @@ beforeAll(async () => {
   await bundleCli({ outdir: build, version: "0.0.1" })
   const root = path.join(home, "lib", "node_modules", "@opencode", "browse")
   fs.cpSync(build, path.join(root, "dist"), { recursive: true })
-  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@opencode/browse", version: "0.0.1" }))
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@sjseo298/browse", version: "0.0.1" }))
   fs.symlinkSync(path.join(import.meta.dir, "../node_modules"), path.join(root, "node_modules"), "junction")
   installed = path.join(root, "dist", "cli.mjs")
 }, 30_000)

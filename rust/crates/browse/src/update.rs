@@ -3,7 +3,7 @@
 //!               SHA-256-checked download of the install script's tarball whose executable replaces this one in place
 //!   global      the same manifest (rollout and required included), then the package manager that installed it:
 //!               `npm install -g`, `bun add -g`, `pnpm add -g`, `yarn global add` or `volta install` of
-//!               @opencode/browse@<the manifest's version> into the same folder; npm can lag the service by a few
+//!               @sjseo298/browse@<the manifest's version> into the same folder; npm can lag the service by a few
 //!               minutes, and a version its registry doesn't have yet is simply tried again later
 //!   runner      npx, bunx, pnpm dlx and yarn dlx resolve the package themselves: the manifest only says another release
 //!               is out
@@ -30,7 +30,7 @@ use crate::relay_api::paths;
 use crate::protocol::{self, Decision};
 use crate::{VERSION, session};
 
-const RELEASE_SERVICE: &str = "https://anoma.ly/release";
+const RELEASE_SERVICE: &str = "https://sjseo298.github.io/browse/release";
 const HOUR: Duration = Duration::from_secs(3600);
 
 /// The release service's name for this build's platform.
@@ -400,7 +400,7 @@ fn not_published(text: &str) -> bool {
     ["ETARGET", "No matching version", "No version matching", "Couldn't find any versions", "ERR_PNPM_NO_MATCHING_VERSION"].iter().any(|needle| text.contains(needle))
 }
 
-/// Installs @opencode/browse@<version> into this global install with its package manager.
+/// Installs @sjseo298/browse@<version> into this global install with its package manager.
 pub fn package_install(global: &Global, version: &str) -> anyhow::Result<Installed> {
     let words = global.manager.words(version);
     let command = global.command(version, registry_override().as_deref());
@@ -939,7 +939,7 @@ mod tests {
 
     #[test]
     fn checks_name_the_install_kind_in_the_user_agent() {
-        let global = |manager| Install::Global(Global { package: "/x/@opencode/browse".into(), platform: "browse-linux-x64".into(), manager, launcher: crate::method::Launcher::default() });
+        let global = |manager| Install::Global(Global { package: "/x/@sjseo298/browse".into(), platform: "browse-linux-x64".into(), manager, launcher: crate::method::Launcher::default() });
         let table = [
             (Install::Binary("/b".into()), "binary"),
             (global(Manager::Npm { prefix: "/p".into() }), "npm"),
@@ -973,7 +973,7 @@ mod tests {
         assert!(super::Updater::new(Install::Checkout, idle()).is_none());
         let (mut other, worker) = super::Updater::new(Install::Other, idle()).unwrap();
         assert!(!worker.updates && other.replacement().is_none());
-        let lost = Install::Global(Global { package: "/nowhere/@opencode/browse".into(), platform: "browse-linux-x64".into(), manager: Manager::Npm { prefix: "/nowhere".into() }, launcher: crate::method::Launcher::default() });
+        let lost = Install::Global(Global { package: "/nowhere/@sjseo298/browse".into(), platform: "browse-linux-x64".into(), manager: Manager::Npm { prefix: "/nowhere".into() }, launcher: crate::method::Launcher::default() });
         assert!(lost.executable().is_none());
         let (mut updater, worker) = super::Updater::new(lost, idle()).unwrap();
         assert!(!worker.updates, "no executable: check only");
@@ -997,30 +997,30 @@ mod tests {
     fn npm_errors_keep_the_gist() {
         let eacces = "npm error code EACCES\nnpm error syscall mkdir\nnpm error path /usr/lib/node_modules/@opencode\nnpm error errno -13\nnpm error Error: EACCES: permission denied, mkdir '/usr/lib/node_modules/@opencode'\nnpm error\nnpm error The operation was rejected by your operating system.\nnpm error A complete log of this run can be found in: /x.log\n";
         assert_eq!(super::npm_error(eacces), "Error: EACCES: permission denied, mkdir '/usr/lib/node_modules/@opencode'");
-        let missing = "npm error code ETARGET\nnpm error notarget No matching version found for @opencode/browse@9.9.9.\nnpm error A complete log of this run can be found in: /x.log\n";
-        assert_eq!(super::npm_error(missing), "ETARGET: notarget No matching version found for @opencode/browse@9.9.9.");
+        let missing = "npm error code ETARGET\nnpm error notarget No matching version found for @sjseo298/browse@9.9.9.\nnpm error A complete log of this run can be found in: /x.log\n";
+        assert_eq!(super::npm_error(missing), "ETARGET: notarget No matching version found for @sjseo298/browse@9.9.9.");
         assert_eq!(super::npm_error(""), "it printed nothing");
     }
 
     #[test]
     fn other_tools_errors_keep_the_gist() {
-        let bun = "bun add v1.4.4 (abc)\n  🔍 Resolving [1/1]\nerror: No version matching \"9.9.9\" found for specifier \"@opencode/browse\" (but package exists)\nerror: @opencode/browse@9.9.9 failed to resolve\n";
-        assert_eq!(super::tool_error(bun), "No version matching \"9.9.9\" found for specifier \"@opencode/browse\" (but package exists)");
-        let yarn = "yarn global v1.22.22\n[1/4] Resolving packages...\nerror Couldn't find any versions for \"@opencode/browse\" that matches \"9.9.9\"\ninfo Visit https://yarnpkg.com/en/docs/cli/global for documentation about this command.\n";
-        assert_eq!(super::tool_error(yarn), "Couldn't find any versions for \"@opencode/browse\" that matches \"9.9.9\"");
+        let bun = "bun add v1.4.4 (abc)\n  🔍 Resolving [1/1]\nerror: No version matching \"9.9.9\" found for specifier \"@sjseo298/browse\" (but package exists)\nerror: @sjseo298/browse@9.9.9 failed to resolve\n";
+        assert_eq!(super::tool_error(bun), "No version matching \"9.9.9\" found for specifier \"@sjseo298/browse\" (but package exists)");
+        let yarn = "yarn global v1.22.22\n[1/4] Resolving packages...\nerror Couldn't find any versions for \"@sjseo298/browse\" that matches \"9.9.9\"\ninfo Visit https://yarnpkg.com/en/docs/cli/global for documentation about this command.\n";
+        assert_eq!(super::tool_error(yarn), "Couldn't find any versions for \"@sjseo298/browse\" that matches \"9.9.9\"");
         assert_eq!(super::tool_error("something odd\nlast line\n"), "last line");
         assert_eq!(super::tool_error(" \n"), "it printed nothing");
     }
 
     #[test]
     fn a_version_missing_from_the_registry_is_a_wait_not_a_failure() {
-        let npm = "npm error code ETARGET\nnpm error notarget No matching version found for @opencode/browse@99.0.0.\n";
+        let npm = "npm error code ETARGET\nnpm error notarget No matching version found for @sjseo298/browse@99.0.0.\n";
         assert!(super::not_published(npm));
-        let bun = "error: No version matching \"99.0.0\" found for specifier \"@opencode/browse\" (but package exists)\n";
+        let bun = "error: No version matching \"99.0.0\" found for specifier \"@sjseo298/browse\" (but package exists)\n";
         assert!(super::not_published(bun));
-        let pnpm = " ERR_PNPM_NO_MATCHING_VERSION  No matching version found for @opencode/browse@99.0.0\n";
+        let pnpm = " ERR_PNPM_NO_MATCHING_VERSION  No matching version found for @sjseo298/browse@99.0.0\n";
         assert!(super::not_published(pnpm));
-        let yarn = "error Couldn't find any versions for \"@opencode/browse\" that matches \"99.0.0\"\n";
+        let yarn = "error Couldn't find any versions for \"@sjseo298/browse\" that matches \"99.0.0\"\n";
         assert!(super::not_published(yarn));
         assert!(!super::not_published("npm error code EACCES\nnpm error Error: EACCES: permission denied\n"));
     }

@@ -5,14 +5,14 @@
 //   binary install  the install script this release shipped with (baked in by script/compile.ts) replaces
 //                   ~/.local/bin/browse by atomic rename (Windows renames the running executable aside first); running
 //                   processes keep their old inode on unix.
-//   npm global      `npm install -g @opencode/browse@<version>` replaces the package in place.
+//   npm global      `npm install -g @sjseo298/browse@<version>` replaces the package in place.
 //   npx             no-op: npx resolves the package itself, and install never writes npx entries.
 // The self-managed runtime of releases before 0.0.11 (runtime/versions under the old data root, setup/legacy.ts) runs as
 // an npm install whose updates land in npm's global folder (updateTarget); the relay restarted from there takes the old
 // runtime over (setup/legacy-runtime.ts).
 //
 // The relay checks its channel at launch and at least once an hour. A binary install reads its channel's manifest from
-// Anomaly's release service (release-service.ts, anomalyco/release docs/protocol.md) and follows it; an npm global
+// The fork's release service (release-service.ts, release-protocol spec: anomalyco/release docs/protocol.md) and follows it; an npm global
 // install reads the npm dist-tag (latest, or dev for a dev build, which every push to dev publishes). Mode "on"
 // (default) waits for idle before running the installer in its own process and again before restarting the relay from
 // the same entry path. "notify" only shows the update; "off" doesn't check.
@@ -29,7 +29,7 @@ import { insidePath, legacyDataRoot } from "../setup/legacy.ts"
 import { opencodeBrowserVersion } from "../version.ts"
 import { checkRelease, releaseChannel, runningServiceTarget, type ReleaseChannel, type ReleaseDecision } from "./release-service.ts"
 
-export const PACKAGE_NAME = "@opencode/browse"
+export const PACKAGE_NAME = "@sjseo298/browse"
 const HOUR_MS = 60 * 60 * 1000
 const DEFAULT_REGISTRY = "https://registry.npmjs.org"
 

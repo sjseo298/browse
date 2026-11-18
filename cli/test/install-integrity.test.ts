@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process"
 const installer = readFileSync(path.join(import.meta.dir, "../../install"), "utf8")
 const powershellInstaller = readFileSync(path.join(import.meta.dir, "../../install.ps1"), "utf8")
 const version = "0.0.7"
-const packageName = "@opencode/browse-test"
+const packageName = "@sjseo298/browse-test"
 
 type Env = { home: string; bin: string; work: string }
 
@@ -147,7 +147,7 @@ test.skipIf(process.platform === "win32")("a tarball with different contents tha
     const result = install(env, tampered, metadata(env, "published", { archive: published }))
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain("checksum mismatch")
-    expect(result.stderr).toContain("@opencode/browse-")
+    expect(result.stderr).toContain("@sjseo298/browse-")
     expect(result.stderr).toContain("nothing was installed")
     expect(readFileSync(path.join(bin, "browse"), "utf8")).toBe("old binary")
     expect(existsSync(path.join(bin, "browse.new"))).toBe(false)

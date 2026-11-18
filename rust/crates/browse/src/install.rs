@@ -164,15 +164,15 @@ fn removal(file: &Path) -> String {
     let target = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf()).to_string_lossy().replace('\\', "/");
     let text = format!("{}|{target}", file.to_string_lossy().replace('\\', "/"));
     if text.contains("/.bun/") {
-        "`bun remove -g @opencode/browse`".into()
+        "`bun remove -g @sjseo298/browse`".into()
     } else if text.contains("pnpm") {
-        "`pnpm remove -g @opencode/browse`".into()
+        "`pnpm remove -g @sjseo298/browse`".into()
     } else if text.contains("/.volta/") {
-        "`volta uninstall @opencode/browse`".into()
+        "`volta uninstall @sjseo298/browse`".into()
     } else if text.contains("yarn") {
-        "`yarn global remove @opencode/browse`".into()
-    } else if target.contains("@opencode/browse") || target.ends_with(".mjs") {
-        "`npm rm -g @opencode/browse`".into()
+        "`yarn global remove @sjseo298/browse`".into()
+    } else if target.contains("@sjseo298/browse") || target.ends_with(".mjs") {
+        "`npm rm -g @sjseo298/browse`".into()
     } else {
         format!("delete {}", file.display())
     }
@@ -511,11 +511,11 @@ pub fn uninstall(args: &[String]) -> anyhow::Result<i32> {
     }
     if let Install::Global(global) = &install {
         let words = match global.manager {
-            Manager::Npm { .. } => "npm rm -g @opencode/browse",
-            Manager::Bun { .. } => "bun remove -g @opencode/browse",
-            Manager::Pnpm { .. } => "pnpm remove -g @opencode/browse",
-            Manager::Yarn { .. } => "yarn global remove @opencode/browse",
-            Manager::Volta { .. } => "volta uninstall @opencode/browse",
+            Manager::Npm { .. } => "npm rm -g @sjseo298/browse",
+            Manager::Bun { .. } => "bun remove -g @sjseo298/browse",
+            Manager::Pnpm { .. } => "pnpm remove -g @sjseo298/browse",
+            Manager::Yarn { .. } => "yarn global remove @sjseo298/browse",
+            Manager::Volta { .. } => "volta uninstall @sjseo298/browse",
         };
         println!("browse itself is still installed with {}: run `{words}` to remove it.", global.manager.name());
     }

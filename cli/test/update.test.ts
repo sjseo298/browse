@@ -303,6 +303,6 @@ describe("update command", () => {
   test("installed from npm: prints the npx update instead", () => {
     const { code, output } = update(undefined)
     expect(code).toBe(0)
-    expect(output).toContain("npx @opencode/browse@latest install")
+    expect(output).toContain("npx @sjseo298/browse@latest install")
   })
 })

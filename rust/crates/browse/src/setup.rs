@@ -432,7 +432,7 @@ pub fn extension() -> i32 {
     if update::channel() == "dev" {
         println!();
         println!("The store extension works with dev builds too. To try the dev extension instead, download");
-        println!("https://anoma.ly/release/browse/extension/dev/chromium, unzip it, turn on Developer mode on your browser's");
+        println!("https://sjseo298.github.io/browse/release/browse/extension/dev/chromium, unzip it, turn on Developer mode on your browser's");
         println!("extensions page, click Load unpacked and pick the unzipped folder; then run `browse pair`.");
     }
     0

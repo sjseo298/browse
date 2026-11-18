@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # publish-release-service.sh <build dir> <binaries dir> [<macOS signed dir>] [<Windows signed dir>]: publishes this run
-# to Anomaly's release service, https://anoma.ly/release (github.com/anomalyco/release, docs/publishing.md), through its
+# to the fork's release service, https://sjseo298.github.io/browse/release (release protocol: github.com/anomalyco/release, docs/publishing.md), through its
 # shared client: a one-hour publish session from the job's GitHub OIDC token (no secrets), content-addressed uploads,
 # retries, and a check of every published file. The service admits this workflow on refs/heads/dev in environment release
 # (scripts/release-registry.json, registered there as registry/browse.json).
@@ -9,7 +9,7 @@
 #
 #   extension  chromium   the extension zip: browse-extension-<version>.zip, the store build on stable and the unpacked
 #                         one on dev
-#   cli        one target per binary (the same eleven targets as @opencode/browse-<target>), npm's darwin is the
+#   cli        one target per binary (the same eleven targets as @sjseo298/browse-<target>), npm's darwin is the
 #              service's macos: opencode-browse-<target>-<version>.tgz
 #
 # A signed macOS or Windows tarball (sign-macos.sh, repack-windows.sh) replaces the unsigned one of the same name: the
@@ -18,7 +18,7 @@
 # these files, so a rerun is safe. A dry run prints the artifact/channel/target/file list and publishes nothing.
 . "$(dirname "$0")/lib.sh"
 
-release=${BROWSE_RELEASE_SERVICE:-https://anoma.ly/release}
+release=${BROWSE_RELEASE_SERVICE:-https://sjseo298.github.io/browse/release}
 release=${release%/}
 build_dir=$1
 binaries_dir=$2

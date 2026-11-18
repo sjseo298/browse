@@ -1,5 +1,5 @@
 {
-  "name": "@opencode/browse",
+  "name": "@sjseo298/browse",
   "version": "0.1.5",
   "description": "browse: connect the extension to opencode, and drive your browser from any agent (CLI, MCP, Playwright).",
   "type": "module",
@@ -17,7 +17,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anomalyco/browse.git",
+    "url": "git+https://github.com/sjseo298/browse.git",
     "directory": "cli"
   },
   "scripts": {

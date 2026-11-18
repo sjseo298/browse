@@ -1,6 +1,6 @@
 {
   "app": "browse",
-  "description": "Browse, the browser extension and CLI that let agents drive your browser (anomalyco/browse). Its Release workflow publishes the extension and every CLI binary target on the dev channel from every push to dev, and on stable from a workflow_dispatch on dev, in environment release (no approval). npm and the Chrome Web Store are published separately, not through this service.",
+  "description": "Browse, the browser extension and CLI that let agents drive your browser (sjseo298/browse). Its Release workflow publishes the extension and every CLI binary target on the dev channel from every push to dev, and on stable from a workflow_dispatch on dev, in environment release (no approval). npm and the Chrome Web Store are published separately, not through this service.",
   "stages": [
     "production"
   ],
@@ -22,9 +22,9 @@
   },
   "publishers": [
     {
-      "repository": "anomalyco/browse",
-      "repository_id": "1435849068",
-      "repository_owner_id": "66570915",
+      "repository": "sjseo298/browse",
+      "repository_id": "FILL-IN-FORK-REPO-ID",
+      "repository_owner_id": "FILL-IN-FORK-OWNER-ID",
       "workflow": ".github/workflows/release.yml",
       "refs": [
         "refs/heads/dev"

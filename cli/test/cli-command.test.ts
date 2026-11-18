@@ -19,7 +19,7 @@ describe("the command people type to run browse", () => {
   })
 
   test("an npx install keeps the npx command", () => {
-    expect(cliCommand("pair", { kind: "npm", version: "0.0.8", npx: true })).toBe("npx @opencode/browse pair")
-    expect(cliCommand("pair", { kind: "npm", version: "0.0.9-dev.12", npx: true })).toBe("npx @opencode/browse@dev pair")
+    expect(cliCommand("pair", { kind: "npm", version: "0.0.8", npx: true })).toBe("npx @sjseo298/browse pair")
+    expect(cliCommand("pair", { kind: "npm", version: "0.0.9-dev.12", npx: true })).toBe("npx @sjseo298/browse@dev pair")
   })
 })

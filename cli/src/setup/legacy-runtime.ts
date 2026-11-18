@@ -1,5 +1,5 @@
 // Taking over the self-managed runtime of releases before 0.0.11 (setup/legacy.ts). Its shim, bin/opencode-browser.mjs,
-// starts runtime/versions/<current.json version>/node_modules/@opencode/browse/dist/cli.mjs, and an agent's running
+// starts runtime/versions/<current.json version>/node_modules/@sjseo298/browse/dist/cli.mjs, and an agent's running
 // shim swaps its MCP server once current.json names another version and the relay reports that version. A relay
 // started from a current install (the npm global package or the binary) while that runtime is active takes it over, in
 // two steps around binding the relay port:
@@ -107,7 +107,7 @@ export function adoptLegacyRuntime(legacy: LegacyRuntime | undefined, runtime = 
 function writeForwarder(entry: string, runtime: Runtime) {
   const packageDir = path.dirname(path.dirname(entry))
   fs.mkdirSync(path.dirname(entry), { recursive: true })
-  writeAtomic(path.join(packageDir, "package.json"), JSON.stringify({ name: "@opencode/browse", version: runtime.version, private: true }) + "\n")
+  writeAtomic(path.join(packageDir, "package.json"), JSON.stringify({ name: "@sjseo298/browse", version: runtime.version, private: true }) + "\n")
   const target = JSON.stringify(runtime.entry)
   const run = runtime.kind === "binary"
     ? [

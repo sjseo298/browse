@@ -9,7 +9,7 @@ declare global {
   var __OPENCODE_BROWSER_BUILD_ID__: string | undefined
   // True in a standalone `bun build --compile` executable (script/compile.ts).
   var __OPENCODE_BROWSER_COMPILED__: boolean | undefined
-  // The executable's platform, as in its npm package @opencode/browse-<target>: linux-x64, darwin-arm64, linux-x64-musl…
+  // The executable's platform, as in its npm package @sjseo298/browse-<target>: linux-x64, darwin-arm64, linux-x64-musl…
   var __OPENCODE_BROWSER_TARGET__: string | undefined
   // The install script (install, or install.ps1 on Windows) this release shipped with, baked in by script/compile.ts:
   // a binary install's updater reruns it instead of downloading the one served at update time. npm bundles leave it unset.

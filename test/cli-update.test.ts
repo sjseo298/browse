@@ -43,7 +43,7 @@ describe("cliUpdateNotice", () => {
   test("mentions updates that are notify-only or off", () => {
     expect(cliUpdateNotice({ ...base, install: "npm", mode: "notify", effective: "notify" }, NOW)).toMatchObject({
       reason: "mode",
-      command: "npm install -g @opencode/browse@latest",
+      command: "npm install -g @sjseo298/browse@latest",
     })
     expect(cliUpdateNotice({ ...base, install: "npm", mode: "off", effective: "off" }, NOW)).toMatchObject({ reason: "mode" })
     // An environment override can turn off what the stored mode says.
@@ -53,7 +53,7 @@ describe("cliUpdateNotice", () => {
   test("mentions installs that can't update themselves", () => {
     expect(cliUpdateNotice({ ...base, install: "npx", effective: "off" }, NOW)).toMatchObject({
       reason: "install",
-      command: "npx @opencode/browse@latest install",
+      command: "npx @sjseo298/browse@latest install",
     })
     expect(cliUpdateNotice({ ...base, install: "other", effective: "off" }, NOW)).toMatchObject({ reason: "install", command: "browse update" })
     expect(cliUpdateNotice({ ...base, install: "other", cli: "node /src/cli.mjs", effective: "off" }, NOW)).toMatchObject({
@@ -93,13 +93,13 @@ describe("cliUpdateNotice", () => {
 describe("package manager installs", () => {
   test("use the relay's exact update command for each method", () => {
     const table: Array<[RelayAutoUpdate["install"], RelayAutoUpdate["method"], string]> = [
-      ["binary", "bun", "bun add -g @opencode/browse@dev"],
-      ["binary", "pnpm", "pnpm add -g @opencode/browse@dev"],
-      ["binary", "yarn", "yarn global add @opencode/browse@dev"],
-      ["binary", "volta", "volta install @opencode/browse@dev"],
-      ["npm", "npm", "npm install -g @opencode/browse@dev"],
-      ["npx", "bunx", "bunx @opencode/browse@dev install"],
-      ["npx", "pnpm-dlx", "pnpm dlx @opencode/browse@dev install"],
+      ["binary", "bun", "bun add -g @sjseo298/browse@dev"],
+      ["binary", "pnpm", "pnpm add -g @sjseo298/browse@dev"],
+      ["binary", "yarn", "yarn global add @sjseo298/browse@dev"],
+      ["binary", "volta", "volta install @sjseo298/browse@dev"],
+      ["npm", "npm", "npm install -g @sjseo298/browse@dev"],
+      ["npx", "bunx", "bunx @sjseo298/browse@dev install"],
+      ["npx", "pnpm-dlx", "pnpm dlx @sjseo298/browse@dev install"],
     ]
     for (const [install, method, updateCommand] of table) {
       const update = { ...base, install, method, updateCommand, mode: "notify" as const, effective: "notify" as const }
@@ -109,10 +109,10 @@ describe("package manager installs", () => {
   })
 
   test("a self-updating bun install stays quiet while its update is pending, as a binary does", () => {
-    expect(cliUpdateNotice({ ...base, install: "binary", method: "bun", updateCommand: "bun add -g @opencode/browse@dev" }, NOW)).toBeUndefined()
-    expect(cliUpdateNotice({ ...base, install: "npx", method: "bunx", effective: "off", updateCommand: "bunx @opencode/browse install" }, NOW)).toMatchObject({
+    expect(cliUpdateNotice({ ...base, install: "binary", method: "bun", updateCommand: "bun add -g @sjseo298/browse@dev" }, NOW)).toBeUndefined()
+    expect(cliUpdateNotice({ ...base, install: "npx", method: "bunx", effective: "off", updateCommand: "bunx @sjseo298/browse install" }, NOW)).toMatchObject({
       reason: "install",
-      command: "bunx @opencode/browse install",
+      command: "bunx @sjseo298/browse install",
     })
   })
 
@@ -128,8 +128,8 @@ describe("package manager installs", () => {
 
 describe("relayAutoUpdate", () => {
   test("keeps the exact method and update command a newer relay sends", () => {
-    const update = relayAutoUpdate({ install: "binary", method: "yarn", updateCommand: "yarn global add @opencode/browse", mode: "on", effective: "on" })
-    expect(update).toMatchObject({ install: "binary", method: "yarn", updateCommand: "yarn global add @opencode/browse" })
+    const update = relayAutoUpdate({ install: "binary", method: "yarn", updateCommand: "yarn global add @sjseo298/browse", mode: "on", effective: "on" })
+    expect(update).toMatchObject({ install: "binary", method: "yarn", updateCommand: "yarn global add @sjseo298/browse" })
     expect(relayAutoUpdate({ install: "binary", method: "brew", mode: "on", effective: "on" })?.method).toBeUndefined()
     expect(relayAutoUpdate({ install: "binary", updateCommand: "x".repeat(501), mode: "on", effective: "on" })?.updateCommand).toBeUndefined()
   })
@@ -138,7 +138,7 @@ describe("relayAutoUpdate", () => {
     expect(
       relayAutoUpdate({
         install: "npx",
-        cli: "npx @opencode/browse",
+        cli: "npx @sjseo298/browse",
         mode: "on",
         effective: "off",
         version: "0.0.16",
@@ -149,7 +149,7 @@ describe("relayAutoUpdate", () => {
       }),
     ).toEqual({
       install: "npx",
-      cli: "npx @opencode/browse",
+      cli: "npx @sjseo298/browse",
       mode: "on",
       effective: "off",
       version: "0.0.16",

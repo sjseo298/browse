@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The `browse` command of the npm package @opencode/browse: finds the native browse binary npm installed for this
-// computer (the optional dependency @opencode/browse-<target>) and runs it with the same arguments, stdio and exit
+// The `browse` command of the npm package @sjseo298/browse: finds the native browse binary npm installed for this
+// computer (the optional dependency @sjseo298/browse-<target>) and runs it with the same arguments, stdio and exit
 // code. Shipped as dist/cli.mjs, the path installs of the TypeScript CLI wrote into agent configs
 // (`node .../dist/cli.mjs mcp`), so those keep working after `npm install -g` moves them to this package.
 import { spawn } from "node:child_process"
@@ -26,7 +26,7 @@ function musl() {
 function binary() {
   if (!os || !arch) return undefined
   const executable = os === "windows" ? "browse.exe" : "browse"
-  const base = `@opencode/browse-${os}-${arch}`
+  const base = `@sjseo298/browse-${os}-${arch}`
   // The libc npm picked may not be the one detected (npm before 10.4 ignores `libc`), so the other is a fallback.
   const names = os === "linux" ? (musl() ? [`${base}-musl`, base] : [base, `${base}-musl`]) : [base]
   for (const name of names) {
@@ -42,7 +42,7 @@ const file = binary()
 if (!file) {
   console.error(
     `browse: no browse binary for ${process.platform}-${process.arch} is installed. Reinstall without --omit=optional ` +
-      "or --no-optional, or install the binary instead: curl -fsSL https://opencode.ai/browse/install | bash",
+      "or --no-optional, or install the binary instead: curl -fsSL https://sjseo298.github.io/browse/install | bash",
   )
   process.exit(1)
 }

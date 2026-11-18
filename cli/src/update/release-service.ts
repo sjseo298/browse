@@ -1,4 +1,4 @@
-// The Anomaly release service client (anomalyco/release docs/protocol.md): the manifest a binary install polls, the
+// The release service client (release-protocol spec: anomalyco/release docs/protocol.md): the manifest a binary install polls, the
 // client rules that decide whether its channel's current release is the build it runs, and the file URLs the installer
 // verifies. Versions are display text, never ordered: an install moves whenever the channel's current release is not
 // the build it runs. npm, pnpm and bun installs never read this; they follow the npm registry (auto-update.ts).
@@ -150,7 +150,7 @@ export function parseManifest(value: unknown): Manifest | undefined {
 }
 
 /**
- * docs/protocol.md's client rules, the same function as anomalyco/release src/protocol/decide.ts. Every case in the
+ * docs/protocol.md's client rules, mirroring the release protocol (anomalyco/release src/protocol/decide.ts). Every case in the
  * release repo's test-vectors/decisions.json is a test (test/release-vectors.test.ts).
  */
 export function decide(input: { readonly app: string; readonly artifact: string; readonly channel: string; readonly manifest: string; readonly install: ReleaseInstall }): ReleaseDecision {

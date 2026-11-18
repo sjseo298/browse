@@ -1,4 +1,4 @@
-//! The release protocol's client rules (anomalyco/release docs/protocol.md, src/protocol/decide.ts). Versions are
+//! The release protocol's client rules (release-protocol spec: anomalyco/release docs/protocol.md, src/protocol/decide.ts). Versions are
 //! display text, only ever tested for equality: an install updates whenever the channel's current release isn't the
 //! build it runs, so a rollback reaches everyone too.
 

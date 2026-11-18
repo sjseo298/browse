@@ -23,7 +23,7 @@ cp "$2/attestation.sigstore.json" "$assets/"
   echo
   echo "## Install"
   echo
-  echo '`npx @opencode/browse install`'
+  echo '`npx @sjseo298/browse install`'
   echo
   echo "## Verify"
   echo

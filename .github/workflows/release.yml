@@ -1,8 +1,8 @@
 name: Release
 run-name: "${{ github.event_name == 'workflow_dispatch' && format('Release {0} {1}', inputs.bump, inputs.version) || '' }}"
 
-# Releases browse: the extension zip, the @opencode/browse npm package (a Node launcher for the native binary) and the
-# browse binaries, built from the Rust workspace in rust/ (an npm package @opencode/browse-<target> per platform, and
+# Releases browse: the extension zip, the @sjseo298/browse npm package (a Node launcher for the native binary) and the
+# browse binaries, built from the Rust workspace in rust/ (an npm package @sjseo298/browse-<target> per platform, and
 # the same targets on Anomaly's release service, which the install script downloads). RELEASING.md has the flow and the
 # setup.
 #
@@ -316,7 +316,7 @@ jobs:
   # The platform packages: opencode-browse-<target>-<version>.tgz for every install script target (scripts/npm-package.ts,
   # which checks each binary's format, CPU, C library and glibc floor), from build-binary's executables. Then the
   # linux-x64 ones as users get them: the install script against a local copy of the release service, the relay and MCP
-  # server, and `npm install` of build's @opencode/browse next to its platform package.
+  # server, and `npm install` of build's @sjseo298/browse next to its platform package.
   build-binaries:
     name: Build binaries
     needs: [plan, tag, build, build-binary]
@@ -379,7 +379,7 @@ jobs:
           done
 
       # The install script reads the channel manifest and downloads the tarball the way it does from
-      # https://anoma.ly/release; here both come from a local server.
+      # https://sjseo298.github.io/browse/release; here both come from a local server.
       - name: Install script against a local release service
         run: |
           set -eu
@@ -448,7 +448,7 @@ jobs:
         env:
           BUILD_ID: ${{ needs.plan.outputs.build_id }}
 
-      - name: npm install of @opencode/browse with its linux-x64 package
+      - name: npm install of @sjseo298/browse with its linux-x64 package
         run: >-
           bun scripts/check-artifacts.ts --version "$VERSION"
           --tarball "$RUNNER_TEMP/in/build/opencode-browse-$VERSION.tgz"
@@ -721,7 +721,7 @@ jobs:
           NOTES_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
 
   # After the release service has the extension zip the dev package fetches. A check run publishes with --dry-run and
-  # no environment. The platform packages @opencode/browse-<target> first, then @opencode/browse.
+  # no environment. The platform packages @sjseo298/browse-<target> first, then @sjseo298/browse.
   publish-npm:
     name: Publish to npm
     needs: [plan, build, build-binaries, sign-macos, sign-windows, attest, publish-release-service]

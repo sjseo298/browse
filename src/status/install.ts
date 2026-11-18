@@ -1,8 +1,8 @@
-// The one-line browse installers (served at opencode.ai/browse/install and install.ps1). This browser's own computer
+// The one-line browse installers (served at https://sjseo298.github.io/browse/install and install.ps1). This browser's own computer
 // gets the lines for its system; another computer's relay is usually a Mac or Linux box, so it gets the shell ones.
-const SHELL = "curl -fsSL https://opencode.ai/browse/install | bash"
-const POWERSHELL = "irm https://opencode.ai/browse/install.ps1 | iex"
-const NPM = "npx @opencode/browse install"
+const SHELL = "curl -fsSL https://sjseo298.github.io/browse/install | bash"
+const POWERSHELL = "irm https://sjseo298.github.io/browse/install.ps1 | iex"
+const NPM = "npx @sjseo298/browse install"
 
 const windows = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent)
 

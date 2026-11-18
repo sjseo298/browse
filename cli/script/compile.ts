@@ -1,7 +1,7 @@
 // Compiles the CLI (src/main.ts, the entry dist/cli.mjs bundles) into standalone executables with `bun build --compile`,
 // every npm dependency bundled, one per platform the way opencode ships @opencode/cli-<target>:
 //   bun script/compile.ts [target...]    e.g. linux-x64 darwin-arm64 windows-x64; no target: every target
-// Output: dist-bin/browse-<target>/bin/browse (browse.exe on Windows) and its package.json (@opencode/browse-<target>,
+// Output: dist-bin/browse-<target>/bin/browse (browse.exe on Windows) and its package.json (@sjseo298/browse-<target>,
 // with os/cpu/libc), which script/pack.ts packs for npm. Like build.ts, OPENCODE_BROWSER_STORE_ID bakes in the store
 // item and OPENCODE_BROWSER_EXTENSION_ZIP a dev build's extension zip. Each executable also carries the install script
 // this release ships with (../install, or ../install.ps1 on Windows), which a binary install's updater reruns in place of
@@ -113,7 +113,7 @@ if (import.meta.main) {
       path.join(outdir, name, "package.json"),
       JSON.stringify(
         {
-          name: `@opencode/${name}`,
+          name: `@sjseo298/${name}`,
           version,
           description: `The browse binary for ${target}.`,
           license: pkg.license,

@@ -26,7 +26,7 @@ afterAll(() => fs.rmSync(build, { recursive: true, force: true }))
 function installBuild(packageDir: string, version: string) {
   fs.rmSync(path.join(packageDir, "dist"), { recursive: true, force: true })
   fs.cpSync(build, path.join(packageDir, "dist"), { recursive: true })
-  fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@opencode/browse", version }))
+  fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@sjseo298/browse", version }))
   if (!fs.existsSync(path.join(packageDir, "node_modules"))) fs.symlinkSync(path.join(import.meta.dir, "../node_modules"), path.join(packageDir, "node_modules"), "junction")
 }
 

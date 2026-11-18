@@ -123,7 +123,7 @@ export type RelayAutoUpdate = {
   method?: RelayInstallMethod
   /** The command that updates this install in a terminal (or switches one that can't update to one that can). */
   updateCommand?: string
-  /** The command that runs the relay's CLI in a terminal: `browse` for a binary install, `npx @opencode/browse` for npm. */
+  /** The command that runs the relay's CLI in a terminal: `browse` for a binary install, `npx @sjseo298/browse` for npm. */
   cli?: string
   mode: AutoUpdateMode
   effective: AutoUpdateMode
@@ -158,8 +158,8 @@ export type CliUpdateNotice = {
  */
 export function cliUpdateCommand(update: Pick<RelayAutoUpdate, "install" | "cli" | "updateCommand">): string {
   if (update.updateCommand?.trim()) return update.updateCommand.trim()
-  if (update.install === "npm") return "npm install -g @opencode/browse@latest"
-  if (update.install === "npx") return "npx @opencode/browse@latest install"
+  if (update.install === "npm") return "npm install -g @sjseo298/browse@latest"
+  if (update.install === "npx") return "npx @sjseo298/browse@latest install"
   return `${update.cli?.trim() || "browse"} update`
 }
 

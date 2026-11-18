@@ -51,7 +51,7 @@ log "Bun"
 if [[ -f "$REPO/package.json" ]]; then
   BUN_VERSION="$(jq -r '.packageManager' "$REPO/package.json" | sed 's/^bun@//')"
 else
-  BUN_VERSION="$(curl -fsSL https://raw.githubusercontent.com/anomalyco/browse/main/package.json | jq -r '.packageManager' | sed 's/^bun@//')"
+  BUN_VERSION="$(curl -fsSL https://raw.githubusercontent.com/sjseo298/browse/main/package.json | jq -r '.packageManager' | sed 's/^bun@//')"
 fi
 if ! command -v bun >/dev/null || [[ "$(bun --version)" != "$BUN_VERSION" ]]; then
   curl -fsSL https://bun.sh/install | bash -s "bun-v$BUN_VERSION" >/dev/null
@@ -61,7 +61,7 @@ bun --version
 
 log "browse checkout"
 if [[ ! -d "$REPO/.git" && "${BROWSE_SKIP_CLONE:-0}" != 1 ]]; then
-  git clone https://github.com/anomalyco/browse.git "$REPO"
+  git clone https://github.com/sjseo298/browse.git "$REPO"
 fi
 cd "$REPO"
 # `setup` builds the extension and CLI, writes the pairing file into dist/, and adds the MCP server to the box's own

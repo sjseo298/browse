@@ -101,7 +101,7 @@ if [ "$mode" = stable ]; then
   [ "$(printf '%s\n%s\n' "$base" "$version" | sort -V | tail -n 1)" = "$version" ] && [ "$version" != "$base" ] ||
     die "$version must be newer than cli/package.json ($current) and the newest tag (${base_tag:-none})"
   status=$(curl -sS -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/@opencode%2fbrowse/$version")
-  [ "$status" != 200 ] || die "@opencode/browse@$version is already published"
+  [ "$status" != 200 ] || die "@sjseo298/browse@$version is already published"
   channel=latest npm_tag=latest dry_run=false
 elif [ "$mode" = dev ]; then
   [ "$GITHUB_RUN_NUMBER" -le 65535 ] || die "Run $GITHUB_RUN_NUMBER doesn't fit a Chrome manifest version"

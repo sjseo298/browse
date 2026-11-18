@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@opencode/browse",
+      "name": "@sjseo298/browse",
       "dependencies": {
         "acorn": "8.18.0",
         "patchright-core": "1.63.0",

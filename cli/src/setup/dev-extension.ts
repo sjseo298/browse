@@ -1,5 +1,5 @@
 // A dev install's extension. Dev builds (every push to dev) don't go to the Chrome Web Store: the release workflow
-// publishes the unpacked extension zip to Anomaly's release service, and the CLI of that build carries the zip's sha256
+// publishes the unpacked extension zip to the fork's release service, and the CLI of that build carries the zip's sha256
 // (paths.ts devExtension). install downloads it into <cache root>/extension, which the user loads unpacked once; its
 // manifest key pins the same ID as a checkout's build, which the relay trusts. When the relay of a newer dev version starts
 // (auto-update), it puts that version's extension in the folder and reloads the connected unpacked extension (relay.ts).

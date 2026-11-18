@@ -29,7 +29,7 @@ const storeId = storeConfig().id ?? PUBLIC_STORE_ID
 export const STORE_IDS = [storeId]
 /** The store page every channel installs the extension from. */
 export const STORE_URL = storeUrl(storeId)
-export const PACKAGE = "@opencode/browse"
+export const PACKAGE = "@sjseo298/browse"
 export const MCP_NAME = "browse"
 /** The MCP server's name before it was renamed to `browse`. */
 export const LEGACY_MCP_NAME = "opencode-browser"

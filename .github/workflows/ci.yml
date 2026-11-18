@@ -109,7 +109,7 @@ jobs:
           cargo install --locked "cargo-zigbuild@$CARGO_ZIGBUILD_VERSION"
 
       # The linux-x64 release binary built as the release builds it (glibc 2.17), packed as the release packs it
-      # (scripts/npm-package.ts), then installed with npm next to @opencode/browse and run through its launcher: relay
+      # (scripts/npm-package.ts), then installed with npm next to @sjseo298/browse and run through its launcher: relay
       # and MCP server.
       - name: Build, pack and install the linux-x64 package
         run: |

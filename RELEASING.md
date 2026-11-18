@@ -1,23 +1,23 @@
 # Releasing browse
 
-One version ships an extension zip, the npm package `@opencode/browse` (`opencode-browse-<version>.tgz`: a Node
+One version ships an extension zip, the npm package `@sjseo298/browse` (`opencode-browse-<version>.tgz`: a Node
 launcher, for `npx` and `npm install -g`) and the `browse` binaries. The npm package carries no extension.
 
 The CLI, relay and MCP server are the Rust `browse` binary (crate `rust/crates/browse`, workspace `rust/`; the
-TypeScript CLI in `cli/` is kept as the reference and isn't built or released anymore). `@opencode/browse` holds only
+TypeScript CLI in `cli/` is kept as the reference and isn't built or released anymore). `@sjseo298/browse` holds only
 `dist/cli.mjs` ([rust/npm/browse.mjs](rust/npm/browse.mjs)), which runs the binary of the optional dependency npm
-installed for the machine, `@opencode/browse-<target>`; `dist/cli.mjs` stays the bin path because agent configs written
+installed for the machine, `@sjseo298/browse-<target>`; `dist/cli.mjs` stays the bin path because agent configs written
 by the TypeScript CLI run `node .../dist/cli.mjs mcp`. The version is baked into the binary at build time
 (`BROWSE_VERSION`, with the run's `BROWSE_BUILD_ID`), and `rust/Cargo.toml`/`Cargo.lock` carry it too
 (`scripts/version.ts`). Each binary is published two ways:
-as an npm package `@opencode/browse-<target>` holding `bin/browse` (`bin/browse.exe` on Windows) and a package.json with
-`os`, `cpu` and, on Linux, `libc`; and as one target per binary on Anomaly's release service, which the [install
+as an npm package `@sjseo298/browse-<target>` holding `bin/browse` (`bin/browse.exe` on Windows) and a package.json with
+`os`, `cpu` and, on Linux, `libc`; and as one target per binary on the release service, which the [install
 script](install) downloads. The [release service](#the-release-service) file is
 `opencode-browse-<target>-<version>.tgz`; it carries the same verified bytes as the npm package. Targets:
 `linux-x64`, `linux-x64-baseline`, `linux-arm64`, `linux-x64-musl`, `linux-x64-baseline-musl`, `linux-arm64-musl`,
 `darwin-arm64`, `darwin-x64`, `darwin-x64-baseline`, `windows-x64`, `windows-x64-baseline` (Windows on ARM64 runs x64).
 The service names macOS `macos-*`. A `-baseline` target carries the same binary as its base target (Rust's x86-64
-target doesn't use AVX2), and `@opencode/browse` depends only on the seven base targets. Locally:
+target doesn't use AVX2), and `@sjseo298/browse` depends only on the seven base targets. Locally:
 `cd rust && BROWSE_VERSION=<version> script/release.sh linux-x64 linux-x64-musl`, then
 `bun scripts/npm-package.ts platforms --binaries rust/dist --out <dir>` (with `--target <name>` for only some) and
 `bun scripts/npm-package.ts main --out <dir>`.
@@ -27,7 +27,7 @@ secrets locally, and nothing is built, tagged or published from a laptop. Work l
 
 | Mode | Starts from | Version | Publishes |
 | --- | --- | --- | --- |
-| dev | every push to `dev` (not Markdown-only) | `<next patch>-dev.<run>`, e.g. `0.2.1-dev.57` | the [release service](#the-release-service) channel `dev` (`browse-extension-<version>.zip`, loaded unpacked, and every CLI binary target), then npm dist-tag `dev` (the binaries, then `@opencode/browse`) |
+| dev | every push to `dev` (not Markdown-only) | `<next patch>-dev.<run>`, e.g. `0.2.1-dev.57` | the [release service](#the-release-service) channel `dev` (`browse-extension-<version>.zip`, loaded unpacked, and every CLI binary target), then npm dist-tag `dev` (the binaries, then `@sjseo298/browse`) |
 | stable | **Actions → Release → Run workflow** on `dev` with a bump or version and release notes | `x.y.z` | tag `v<version>`, the [release service](#the-release-service) channel `stable` (the extension zip and every CLI binary target), npm `latest`, the public Chrome Web Store item (`browse-extension-<version>.zip`), the GitHub release |
 | check | the same button with bump `check` and no version, on any branch (`gh workflow run release.yml --ref <branch>`) | `cli/package.json` | nothing: builds, checks and attests the stable artifacts and runs every publish script, the release service included, as a dry run |
 
@@ -55,9 +55,9 @@ build   from the tag: install, typecheck, extension and cargo tests, release:che
         artifact checks), SHA256SUMS digest
 build-binary    one job per Rust build (linux gnu/musl x64/arm64 with cargo-zigbuild, glibc 2.17; macOS arm64/x64 on
         macos-15; windows-x64 with a static C runtime), version and build id baked in; no secrets
-build-binaries  packs and checks the @opencode/browse-<target> tarballs (every target; baseline = base binary), runs
+build-binaries  packs and checks the @sjseo298/browse-<target> tarballs (every target; baseline = base binary), runs
         the linux-x64 ones: the install script against a local release service, relay + MCP, npm install of
-        @opencode/browse with its platform package
+        @sjseo298/browse with its platform package
 sign-macos      optional (repository variable MACOS_SIGNING=true): Developer ID signs the macOS binaries; skipped now
 sign-windows    optional (repository variable WINDOWS_SIGNING=true): Authenticode signs the Windows binaries (Azure
         Trusted Signing; Smart App Control blocks an unsigned browse.exe); skipped now
@@ -65,7 +65,7 @@ attest  build provenance for the zip and every tarball (Sigstore)
 publish-release-service       the extension and every CLI binary target to the release service (channel dev or
         stable); a check run prints the list and publishes nothing
 publish-npm  +  publish-cws   npm latest (--ignore-scripts, provenance; the platform packages first, then
-        @opencode/browse) and Chrome Web Store upload + submit (none when the extension is unchanged)
+        @sjseo298/browse) and Chrome Web Store upload + submit (none when the extension is unchanged)
 publish-github-release        the release on v<version>: notes, zip, tarball, SHA256SUMS, attestation
 push-release-to-dev           pushes the release commit to dev (deploy key), so dev builds count up from it
 ```
@@ -107,7 +107,7 @@ rulesets below require their review. The jobs that need a secret run in the envi
 
 The dev zip keeps the manifest `key`, so it loads with the same unpacked ID as a checkout's `dist/`, which the relay
 trusts, and every dev build still publishes it to the release service
-(`https://anoma.ly/release/browse/extension/dev/chromium`). The Rust CLI doesn't fetch it: `browse install` points at
+(`https://sjseo298.github.io/browse/release/browse/extension/dev/chromium`). The Rust CLI doesn't fetch it: `browse install` points at
 the Chrome Web Store item on every channel, and the store build works with dev CLIs (the relay keeps accepting older
 extension protocols). To try a dev extension, download the zip, unpack it and load it unpacked, then `browse pair`;
 `browse extension` prints these steps on the dev channel and the README's Updates section has them. (The TypeScript CLI baked the dev zip's sha256 in and unpacked it into
@@ -116,24 +116,27 @@ reviewed, too slow for a build per push.
 
 ## The release service
 
-`https://anoma.ly/release` is Anomaly's update service ([anomalyco/release](https://github.com/anomalyco/release)).
-Like Hex and OpenCode, a job in a named environment trades its GitHub OIDC token for a publish session through
-`client.sh` ([.github/release/publish-release-service.sh](.github/release/publish-release-service.sh)); the service
-checks the token against `registry/browse.json` there ([scripts/release-registry.json](scripts/release-registry.json)).
+`https://sjseo298.github.io/browse/release` is this fork's release service: static hosting (sjseo298.github.io)
+serving manifests and tarballs that speak the release protocol of
+[anomalyco/release](https://github.com/anomalyco/release) (spec: its `docs/protocol.md`). A job in a named
+environment trades its GitHub OIDC token for a publish session through `client.sh`
+([.github/release/publish-release-service.sh](.github/release/publish-release-service.sh)); if the service
+enforces a publisher registry it checks the token against `registry/browse.json`
+([scripts/release-registry.json](scripts/release-registry.json)).
 
 | Artifact | Target | File | Latest link |
 | --- | --- | --- | --- |
-| `extension` | `chromium` | `browse-extension-<version>.zip` (the store build on stable, unpacked on dev); `opencode-browser-<version>.zip` on releases before the rename | https://anoma.ly/release/browse/extension/stable/chromium |
-| `cli` | `linux-x64`, `linux-x64-baseline`, `linux-arm64`, `linux-x64-musl`, `linux-x64-baseline-musl`, `linux-arm64-musl` | `opencode-browse-<target>-<version>.tgz` | https://anoma.ly/release/browse/cli/stable/linux-x64 |
-| `cli` | `macos-arm64`, `macos-x64`, `macos-x64-baseline` (files say `darwin-*`) | `opencode-browse-darwin-<arch>-<version>.tgz` | https://anoma.ly/release/browse/cli/stable/macos-arm64 |
-| `cli` | `windows-x64`, `windows-x64-baseline` | `opencode-browse-windows-<arch>-<version>.tgz` | https://anoma.ly/release/browse/cli/stable/windows-x64 |
+| `extension` | `chromium` | `browse-extension-<version>.zip` (the store build on stable, unpacked on dev); `opencode-browser-<version>.zip` on releases before the rename | https://sjseo298.github.io/browse/release/browse/extension/stable/chromium |
+| `cli` | `linux-x64`, `linux-x64-baseline`, `linux-arm64`, `linux-x64-musl`, `linux-x64-baseline-musl`, `linux-arm64-musl` | `opencode-browse-<target>-<version>.tgz` | https://sjseo298.github.io/browse/release/browse/cli/stable/linux-x64 |
+| `cli` | `macos-arm64`, `macos-x64`, `macos-x64-baseline` (files say `darwin-*`) | `opencode-browse-darwin-<arch>-<version>.tgz` | https://sjseo298.github.io/browse/release/browse/cli/stable/macos-arm64 |
+| `cli` | `windows-x64`, `windows-x64-baseline` | `opencode-browse-windows-<arch>-<version>.tgz` | https://sjseo298.github.io/browse/release/browse/cli/stable/windows-x64 |
 
 Every target has a `.../<target>/info` with its version, size and SHA-256. `install` reads the manifest, checks the
 file's size and SHA-256 and installs it; every relay (except a checkout build) polls `cli/<stable|dev>.json` at launch
 and hourly, even with updates off, with User-Agent `browse/<channel>/<version>/cli/<kind>` (`binary`, `npm`, `bun`,
 `pnpm`, `yarn`, `volta`, `npx`, `bunx`, `pnpm-dlx`, `yarn-dlx`, `other` for an install browse didn't make, which only checks), which the protocol allows after its artifact segment
 and lets analytics split installs by kind. A binary install downloads the manifest's file; a global install runs its
-package manager for `@opencode/browse@<the manifest's version>`, and retries quietly while npm doesn't have that version
+package manager for `@sjseo298/browse@<the manifest's version>`, and retries quietly while npm doesn't have that version
 yet. `--version` stays on npm because the protocol has one current release per channel and no version lookup.
 
 A TypeScript binary install's updater (0.0.17 and earlier) runs the install script baked into the binary it is running,
@@ -147,26 +150,16 @@ older installers: relative `url`s, flat target objects, and `release.version` be
 ## One-time setup
 
 1. **Default branch** `dev` (Settings → General).
-2. **Release service.** Open a PR on anomalyco/release updating [scripts/release-registry.json](scripts/release-registry.json)
-   as `registry/browse.json` (listed in `registry/index.ts`): workflow `.github/workflows/release.yml` on
-   `refs/heads/dev` in environment `release`, artifacts `cli` and `extension`, channels `stable`, `beta` and `dev`.
-   Stable and dev share the ref because browse's stable release is a `workflow_dispatch` on `dev` (the tag job pushes
-   `v<version>`, but the run's OIDC ref stays `refs/heads/dev`); `plan-release.sh` is what keeps a push to dev from
-   publishing stable. Merge and deploy it there **before the next stable release**: until then the service refuses the
-   stable channel, and the installer has no stable manifest to read.
-3. **Chrome Web Store item.** The API can't create items, so create it in the
-   [developer dashboard](https://chrome.google.com/webstore/devconsole) with Anomaly's publisher (or reuse
-   `mfnicocicmmlkpjnaffgihfjhdgjkdjg` if it's Anomaly's): upload the zip from `bun run release:check`, fill in the
-   listing from [store/listing.md](store/listing.md), set it **Public**. Then the repository variables (IDs, not
-   secrets): `gh variable set CWS_PUBLISHER_ID --body <id>` and `gh variable set CWS_ITEM_ID --body <id>`.
-4. **Chrome Web Store API.** In an Anomaly Google Cloud project enable the Chrome Web Store API, set the OAuth consent
-   screen to *Internal* (or *External*, **In production**: testing refresh tokens expire in 7 days), and create an
-   OAuth client of type **Desktop app**. The client ID is a repository variable
-   (`gh variable set CWS_CLIENT_ID --body <id>`); the client secret goes to AWS as `browse/release/CWS_CLIENT_SECRET`
-   (`read -rs VALUE && printf %s "$VALUE" | bun set browse release CWS_CLIENT_SECRET`, in
-   [anomalyco/secrets](https://github.com/anomalyco/secrets)). Then run `bun scripts/cws-auth.ts` signed in as the
-   publisher's Google account and pipe the refresh token it prints into
-   `bun set browse release CWS_REFRESH_TOKEN`; nothing goes to disk.
+2. **Release service.** The fork's service (see below) serves static manifests and must accept this repository's
+   publishes: workflow `.github/workflows/release.yml` on `refs/heads/dev` in environment `release`, artifacts `cli`
+   and `extension`, channels `stable`, `beta` and `dev`. If the service enforces a publisher registry, register
+   [scripts/release-registry.json](scripts/release-registry.json) there as `registry/browse.json` **before the next
+   stable release**: until then the service refuses the stable channel, and the installer has no stable manifest to
+   read.
+3. **Chrome Web Store (not used in this fork).** The fork's extension is loaded **unpacked** from `dist/`
+   (AGENTS.md §3); sjseo298 has no CWS item, no `store/` assets and no `scripts/cws-auth.ts`. If a sjseo298 CWS
+   item is ever created, follow the upstream RELEASING.md (anomalyco/browse) for the full procedure: publisher
+   dashboard item, CWS API in a Google Cloud project, OAuth desktop client, refresh token.
 5. **Environment `release`** (Settings → Environments): *Deployment branches and tags* → *Selected* → branch `dev`
    only. No required reviewers: who may release is decided by `plan`'s admin/maintain check and the rulesets. It holds
    no secrets: it is the environment claim the AWS role's trust requires ([Secrets](#secrets)). Delete the old `npm`,
@@ -179,30 +172,30 @@ older installers: relative `url`s, flat target objects, and `release.version` be
      *Repository admin* and *Deploy keys* (the release commit comes back to dev with the deploy key).
    - tags `v*`: restrict creation, updates and deletion; bypass: *Repository admin* and *Deploy keys* (the tag job).
 8. **Actions** (Settings → Actions → General): require actions pinned to a full-length commit SHA.
-9. **npm.** Every package publishes with trusted publishing: `@opencode/browse` and each `@opencode/browse-<target>`
-   trust GitHub Actions in `anomalyco/browse`, workflow `release.yml`. There is no npm token anywhere.
+9. **npm.** Every package publishes with trusted publishing: `@sjseo298/browse` and each `@sjseo298/browse-<target>`
+   trust GitHub Actions in `sjseo298/browse`, workflow `release.yml`. There is no npm token anywhere.
 
    The eleven platform packages are set up already (November 2026): trusted publishing can only be configured on a
-   package that exists, so each `@opencode/browse-<target>` was published once by hand as an empty `0.0.0` on the
-   `placeholder` tag, then trusted like `@opencode/browse`, with no environment restriction. A new target needs the same:
+   package that exists, so each `@sjseo298/browse-<target>` was published once by hand as an empty `0.0.0` on the
+   `placeholder` tag, then trusted like `@sjseo298/browse`, with no environment restriction. A new target needs the same:
 
    ```sh
    npm publish --access public --tag placeholder   # in a folder with just package.json (name, version 0.0.0) and a README
-   npm trust github "@opencode/browse-<target>" --file release.yml --repository anomalyco/browse --allow-publish -y
+   npm trust github "@sjseo298/browse-<target>" --file release.yml --repository sjseo298/browse --allow-publish -y
    ```
 
-   `npm trust list @opencode/browse-<target>` checks one.
+   `npm trust list @sjseo298/browse-<target>` checks one.
 10. **macOS signing (optional).** Without it the macOS binaries carry the ad-hoc signature the Rust linker gives
     them, which runs fine from the install script and npm (neither sets quarantine). To sign with a Developer ID:
     the certificate is `shared/APPLE_SIGNING_CERTIFICATE` in AWS (a Developer ID Application certificate exported
-    without a password, base64 encoded, shared with every Anomaly app); then `gh variable set MACOS_SIGNING --body true`
+    without a password, base64 encoded, shared with every sjseo298 app); then `gh variable set MACOS_SIGNING --body true`
     and the sign-macos job runs, with publish-npm taking the macOS packages only from it.
 11. **Windows signing (optional).** Without it `browse.exe` is unsigned and Windows Smart App Control blocks it, so
     install fails there. To sign with Azure Trusted Signing (now Artifact Signing): a signing account and certificate
     profile; an Azure identity with the **Artifact Signing Certificate Profile Signer** role (formerly Trusted Signing
     Certificate Profile Signer) on the account or profile and read access to the subscription; and a federated
     credential on that identity for this repository's `release` environment (issuer
-    `https://token.actions.githubusercontent.com`, subject `repo:anomalyco/browse:environment:release`, audience
+    `https://token.actions.githubusercontent.com`, subject `repo:sjseo298/browse:environment:release`, audience
     `api://AzureADTokenExchange`). Then the six repository variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
     `AZURE_SUBSCRIPTION_ID`, `AZURE_TRUSTED_SIGNING_ENDPOINT`, `AZURE_TRUSTED_SIGNING_ACCOUNT_NAME` and
     `AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE`, and `gh variable set WINDOWS_SIGNING --body true`: the sign-windows
@@ -212,12 +205,11 @@ older installers: relative `url`s, flat target objects, and `release.version` be
 
 ## Secrets
 
-Release secrets live in AWS Secrets Manager (account `anomaly-secrets`), managed from
-[anomalyco/secrets](https://github.com/anomalyco/secrets). A job that needs one runs in the `release` environment and
-assumes `role/github/browse-release` with its GitHub OIDC token, fetching only the secrets it uses; the role's trust
-requires that environment, and it can read `browse/release/*` and `shared/APPLE_SIGNING_CERTIFICATE`. Set a value with
-`bun set browse release <NAME>` in that repo; no release secret is stored in GitHub. npm needs none (trusted
-publishing).
+Release secrets live in sjseo298's own secret store — the fork has **no access** to Anomaly's AWS account. The
+upstream mechanism (a `secrets` repo managing AWS Secrets Manager, a `release`-environment OIDC role that a job
+assumes with its GitHub token, `bun set browse release <NAME>` to set values) is reproduced under sjseo298's own
+account and repo; the role name and the `browse/release/*` namespace below carry over unchanged. A local-only fork
+needs no secrets at all (AGENTS.md §5). npm needs none (trusted publishing).
 
 | Secret | Use |
 | --- | --- |
@@ -230,7 +222,7 @@ are the signing switches (`MACOS_SIGNING`, `WINDOWS_SIGNING`) and the Azure ids 
 
 ## Undoing a bad release
 
-- **npm.** npm users move forward, so release a fixed patch. `npm deprecate @opencode/browse@<bad> "<why>"`
+- **npm.** npm users move forward, so release a fixed patch. `npm deprecate @sjseo298/browse@<bad> "<why>"`
   warns new installs; a user can rerun the installer with `--version <good>` (which installs from npm) to go back.
 - **Chrome Web Store.** Roll back in the dashboard ([how](https://developer.chrome.com/docs/webstore/rollback)), or
   cancel a pending review.
