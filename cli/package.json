@@ -1,6 +1,6 @@
 {
   "name": "@sjseo298/browse",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "browse: connect the extension to opencode, and drive your browser from any agent (CLI, MCP, Playwright).",
   "type": "module",
   "license": "MIT",
