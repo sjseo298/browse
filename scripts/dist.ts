@@ -10,7 +10,7 @@
 import { $ } from "bun"
 import crypto from "node:crypto"
 import { chmodSync, existsSync } from "node:fs"
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
@@ -346,12 +346,159 @@ async function cmdValidate(options: { manifestPath: string; outDir: string; prev
   console.log(`✓ Manifest ${options.manifestPath} validated (${targetNames.length} targets)`)
 }
 
+export type ReleaseEntry = {
+  readonly tagName: string
+  readonly createdAt?: string
+  readonly isDraft?: boolean
+  readonly isPrerelease?: boolean
+}
+
+function parseSemverTag(tag: string): { major: number; minor: number; patch: number; prerelease: string } | undefined {
+  const m = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/.exec(tag.trim())
+  if (!m) return undefined
+  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]), prerelease: m[4] ?? "" }
+}
+
+/** Sort newest-first by semver (stable before prerelease), falling back to createdAt desc then tagName desc. */
+export function compareReleaseDesc(a: ReleaseEntry, b: ReleaseEntry): number {
+  const pa = parseSemverTag(a.tagName)
+  const pb = parseSemverTag(b.tagName)
+  if (pa && pb) {
+    if (pa.major !== pb.major) return pb.major - pa.major
+    if (pa.minor !== pb.minor) return pb.minor - pa.minor
+    if (pa.patch !== pb.patch) return pb.patch - pa.patch
+    if (pa.prerelease !== pb.prerelease) {
+      if (!pa.prerelease) return -1
+      if (!pb.prerelease) return 1
+      return pb.prerelease.localeCompare(pa.prerelease)
+    }
+  } else if (pa !== pb) {
+    return pa ? -1 : 1
+  }
+  const ta = a.createdAt ? Date.parse(a.createdAt) : 0
+  const tb = b.createdAt ? Date.parse(b.createdAt) : 0
+  if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return tb - ta
+  return b.tagName.localeCompare(a.tagName)
+}
+
+/** Select up to `keep` distributions (newest + immediately previous), always protecting `protectTag` if present. */
+export function selectReleasesToPrune(
+  releases: readonly ReleaseEntry[],
+  options: { readonly keep: number; readonly protectTag?: string },
+): { readonly keep: ReleaseEntry[]; readonly remove: ReleaseEntry[] } {
+  if (!Number.isInteger(options.keep) || options.keep < 1) {
+    throw new Error(`--keep must be an integer >= 1 (got ${options.keep})`)
+  }
+  const sorted = [...releases].sort(compareReleaseDesc)
+  const kept: ReleaseEntry[] = []
+  const keptTags = new Set<string>()
+
+  if (options.protectTag) {
+    const protectedEntry = sorted.find((r) => r.tagName === options.protectTag)
+    if (protectedEntry) {
+      kept.push(protectedEntry)
+      keptTags.add(protectedEntry.tagName)
+    }
+  }
+  for (const entry of sorted) {
+    if (kept.length >= options.keep) break
+    if (keptTags.has(entry.tagName)) continue
+    kept.push(entry)
+    keptTags.add(entry.tagName)
+  }
+  kept.sort(compareReleaseDesc)
+  const remove = sorted.filter((entry) => !keptTags.has(entry.tagName))
+  return { keep: kept, remove }
+}
+
+/** Return local `dist-<version>` directories under `release/` that do not belong to `keepTags`. */
+export function selectLocalDistDirsToPrune(dirNames: readonly string[], keepTags: readonly string[]): string[] {
+  const keepVersions = new Set(keepTags.map((t) => t.replace(/^v/, "")))
+  return dirNames.filter((name) => {
+    if (!name.startsWith("dist-")) return false
+    const version = name.slice("dist-".length)
+    return version.length > 0 && !keepVersions.has(version)
+  })
+}
+
+/** True if `targetTag` is the newest non-draft release (or no non-draft releases exist yet). */
+export function isLatestReleaseTag(releases: readonly ReleaseEntry[], targetTag: string): boolean {
+  const nonDrafts = releases.filter((r) => !r.isDraft)
+  if (!nonDrafts.length) return true
+  const sorted = [...nonDrafts].sort(compareReleaseDesc)
+  return sorted[0]?.tagName === targetTag
+}
+
+async function cmdPrune(options: {
+  repo: string
+  keep: number
+  protectTag?: string
+  dryRun: boolean
+  cleanupTags: boolean
+}) {
+  const auth = await $`gh auth status`.quiet().nothrow()
+  if (auth.exitCode !== 0 && !options.dryRun) {
+    throw new Error(`gh CLI is not authenticated:\n${auth.stderr.toString()}`)
+  }
+
+  let nonDrafts: ReleaseEntry[] = []
+  if (auth.exitCode === 0) {
+    const raw = (await $`gh release list --repo ${options.repo} --limit 100 --json tagName,createdAt,isDraft,isPrerelease`.json()) as ReleaseEntry[]
+    nonDrafts = raw.filter((r) => !r.isDraft)
+  } else {
+    console.log("⚠ gh not authenticated in dry-run; skipping remote GitHub Releases query")
+  }
+
+  const { keep, remove } = selectReleasesToPrune(nonDrafts, { keep: options.keep, protectTag: options.protectTag })
+  const keptTags = keep.map((r) => r.tagName)
+
+  const releaseRoot = path.join(root, "release")
+  let localDirs: string[] = []
+  if (existsSync(releaseRoot)) {
+    const entries = await readdir(releaseRoot, { withFileTypes: true })
+    localDirs = entries.filter((e) => e.isDirectory() && e.name.startsWith("dist-")).map((e) => e.name)
+  }
+  const effectiveKeepTags = keptTags.length
+    ? keptTags
+    : localDirs
+        .map((d) => `v${d.slice("dist-".length)}`)
+        .sort((a, b) => compareReleaseDesc({ tagName: a }, { tagName: b }))
+        .slice(0, options.keep)
+  const localToRemove = selectLocalDistDirsToPrune(localDirs, effectiveKeepTags)
+
+  if (options.dryRun) {
+    console.log(`=== Dry Run: prune distributions in ${options.repo} (keep ${options.keep}) ===`)
+    console.log(`  Keep GitHub Releases:   ${keptTags.length ? keptTags.join(", ") : "(none)"}`)
+    console.log(`  Delete GitHub Releases: ${remove.length ? remove.map((r) => r.tagName).join(", ") : "(none)"}`)
+    console.log(`  Delete local dist dirs: ${localToRemove.length ? localToRemove.join(", ") : "(none)"}`)
+    return
+  }
+
+  for (const rel of remove) {
+    console.log(`→ Deleting old GitHub Release ${rel.tagName} (retaining latest ${options.keep})...`)
+    if (options.cleanupTags) {
+      await $`gh release delete ${rel.tagName} --repo ${options.repo} --yes --cleanup-tag`
+      await $`git tag -d ${rel.tagName}`.cwd(root).quiet().nothrow()
+    } else {
+      await $`gh release delete ${rel.tagName} --repo ${options.repo} --yes`
+    }
+  }
+  for (const dir of localToRemove) {
+    console.log(`→ Removing old local build folder release/${dir}...`)
+    await rm(path.join(releaseRoot, dir), { recursive: true, force: true })
+  }
+  console.log(`✓ Retention enforced (kept ${keptTags.length ? keptTags.join(", ") : "0"}; removed ${remove.length} GitHub release(s), ${localToRemove.length} local dir(s))`)
+}
+
 async function cmdPublish(options: {
   version: string
   channel: ReleaseChannel
   outDir: string
   repo: string
   dryRun: boolean
+  keep: number
+  cleanupTags: boolean
+  overwrite: boolean
 }) {
   const manifestPath = path.join(options.outDir, `manifest-${options.channel}.json`)
   if (!existsSync(manifestPath)) {
@@ -379,33 +526,77 @@ async function cmdPublish(options: {
   const tag = `v${options.version}`
   const ghPagesUrl = pagesBaseUrl(options.repo)
   if (options.dryRun) {
-    console.log(`=== Dry Run: publish ${tag} (${options.channel}) to ${options.repo} ===`)
-    console.log(`1. GitHub Release ${tag}: ${assets.map((a) => path.basename(a)).join(", ")}`)
+    console.log(`=== Dry Run: publish ${tag} (${options.channel}) to ${options.repo}${options.overwrite ? " [OVERWRITE]" : ""} ===`)
+    if (options.overwrite) {
+      console.log(`0. Overwrite guard: verify tracked files clean, verify ${tag} is Latest release, force-move tag ${tag} -> HEAD`)
+    }
+    console.log(`1. GitHub Release ${tag}: ${assets.map((a) => path.basename(a)).join(", ")}${options.overwrite ? " (replace assets & notes)" : ""}`)
     console.log(`2. gh-pages branch: release/browse/cli/${options.channel}.json, install, install.ps1, .nojekyll`)
     console.log(`3. GitHub Pages: ensure source=gh-pages path=/ (${ghPagesUrl}/release/browse/cli/${options.channel}.json)`)
+    if (options.keep > 0) {
+      console.log(`4. Prune old distributions: keep latest ${options.keep} (${tag} + immediately previous)`)
+    }
     return
   }
 
-  // Verify gh CLI auth and tag existence on remote.
+  // Verify gh CLI auth and tag state on remote.
   const auth = await $`gh auth status`.quiet().nothrow()
   if (auth.exitCode !== 0) throw new Error(`gh CLI is not authenticated:\n${auth.stderr.toString()}`)
 
-  const remoteTag = await $`git ls-remote --tags origin refs/tags/${tag}`.cwd(root).quiet().text()
-  if (!remoteTag.trim()) {
-    throw new Error(`Tag ${tag} is not pushed to origin yet. Commit, run \`git tag ${tag}\`, and \`git push origin dev ${tag}\` before publishing.`)
+  const headSha = (await $`git rev-parse HEAD`.cwd(root).quiet().text()).trim()
+  const remoteTagLine = (await $`git ls-remote --tags origin refs/tags/${tag}`.cwd(root).quiet().text()).trim()
+
+  if (options.overwrite) {
+    const trackedDirty = (await $`git status --porcelain --untracked-files=no`.cwd(root).quiet().text()).trim()
+    if (trackedDirty) {
+      throw new Error(`Refusing --overwrite with uncommitted changes in tracked files:\n${trackedDirty}\nCommit your fix to dev first.`)
+    }
+    const remoteReleases = (await $`gh release list --repo ${options.repo} --limit 20 --json tagName,createdAt,isDraft`.json()) as ReleaseEntry[]
+    if (!isLatestReleaseTag(remoteReleases, tag)) {
+      const latest = [...remoteReleases].filter((r) => !r.isDraft).sort(compareReleaseDesc)[0]?.tagName ?? "unknown"
+      throw new Error(`--overwrite only replaces the latest release (${latest}); refusing to overwrite older release ${tag}.`)
+    }
+    console.log(`→ Overwrite mode: force-moving tag ${tag} -> ${headSha.slice(0, 7)} on origin...`)
+    await $`git tag -f ${tag} HEAD`.cwd(root).quiet()
+    await $`git push --force origin refs/tags/${tag}`.cwd(root)
+  } else {
+    if (!remoteTagLine) {
+      throw new Error(`Tag ${tag} is not pushed to origin yet. Commit, run \`git tag ${tag}\`, and \`git push origin dev ${tag}\` before publishing.`)
+    }
+    const remoteTagSha = remoteTagLine.split(/\s+/)[0]
+    if (remoteTagSha && remoteTagSha !== headSha) {
+      throw new Error(
+        `Tag ${tag} on origin points to ${remoteTagSha.slice(0, 7)}, not HEAD (${headSha.slice(0, 7)}). Bump a new version with \`bun scripts/version.ts set <next>\` or pass --overwrite to replace the latest release.`,
+      )
+    }
   }
 
-  // Step 1: Create or update GitHub Release (idempotent).
+  // Step 1: Create or update GitHub Release (idempotent / overwrite).
+  const changelogFile = path.join(root, "changelog", `${options.version}.md`)
+  const notesArgs = existsSync(changelogFile)
+    ? ["--notes-file", changelogFile]
+    : ["--notes", `Fork distribution v${options.version} (built locally; binaries for ${Object.keys(manifest.release.targets).join(", ")}).`]
+
   const existingRelease = await $`gh release view ${tag} --repo ${options.repo}`.quiet().nothrow()
   if (existingRelease.exitCode === 0) {
-    console.log(`→ Updating assets on existing GitHub Release ${tag}...`)
+    if (options.overwrite) {
+      console.log(`→ Updating release notes and replacing assets on ${tag}...`)
+      await $`gh release edit ${tag} --repo ${options.repo} --title ${tag} ${notesArgs}`
+      const oldJson = (await $`gh release view ${tag} --repo ${options.repo} --json assets`.json()) as {
+        assets: { name: string }[]
+      }
+      const nextNames = new Set(assets.map((a) => path.basename(a)))
+      for (const oldAsset of oldJson.assets) {
+        if (!nextNames.has(oldAsset.name)) {
+          await $`gh release delete-asset ${tag} ${oldAsset.name} --yes --repo ${options.repo}`
+        }
+      }
+    } else {
+      console.log(`→ Updating assets on existing GitHub Release ${tag}...`)
+    }
     await $`gh release upload ${tag} ${assets} --clobber --repo ${options.repo}`
   } else {
     console.log(`→ Creating GitHub Release ${tag} with ${assets.length} assets...`)
-    const changelogFile = path.join(root, "changelog", `${options.version}.md`)
-    const notesArgs = existsSync(changelogFile)
-      ? ["--notes-file", changelogFile]
-      : ["--notes", `Fork distribution v${options.version} (built locally; binaries for ${Object.keys(manifest.release.targets).join(", ")}).`]
     await $`gh release create ${tag} ${assets} --repo ${options.repo} --title ${tag} ${notesArgs}`
   }
 
@@ -486,6 +677,16 @@ async function cmdPublish(options: {
     console.log(`✓ GitHub Pages active (${info.source?.branch}:${info.source?.path} -> ${info.html_url ?? ghPagesUrl})`)
   }
 
+  if (options.keep > 0) {
+    await cmdPrune({
+      repo: options.repo,
+      keep: options.keep,
+      protectTag: tag,
+      dryRun: false,
+      cleanupTags: options.cleanupTags,
+    })
+  }
+
   console.log(`\nDone:`)
   console.log(`  Release:  https://github.com/${options.repo}/releases/tag/${tag}`)
   console.log(`  Manifest: ${ghPagesUrl}/release/browse/cli/${options.channel}.json`)
@@ -493,13 +694,14 @@ async function cmdPublish(options: {
 }
 
 function printHelp() {
-  console.log(`Usage: bun scripts/dist.ts <build|validate|publish|all> [options]
+  console.log(`Usage: bun scripts/dist.ts <build|validate|publish|prune|all> [options]
 
 Commands:
   build      Compile Rust binary locally (cargo), pack tarballs + unpacked extension zip, emit manifest
   validate   Verify generated manifest against cli/src/update/release-service.ts decide() & local files
-  publish    Create/update GitHub Release v<version> via gh, deploy gh-pages manifest, enable Pages
-  all        Run build -> validate -> publish
+  publish    Create/update GitHub Release v<version> via gh, deploy gh-pages manifest, enable Pages, prune old
+  prune      Delete GitHub Releases and local release/dist-* dirs beyond the latest --keep (default: 2)
+  all        Run build -> validate -> publish (with automatic retention pruning)
 
 Options:
   --version <v>     Release version (default: cli/package.json version)
@@ -509,8 +711,12 @@ Options:
   --repo <o/r>      GitHub owner/repo (default: detected from origin, fallback sjseo298/browse)
   --manifest <f>    Manifest file for validate (default: <out>/manifest-<channel>.json)
   --previous <v>    Older version string for validate upgrade check (default: 0.1.5 or 0.0.0-prev)
+  --keep <n>        Number of GitHub Releases to retain on publish/prune (default: 2: latest + previous)
+  --no-prune        Skip retention pruning at the end of publish/all
+  --cleanup-tags    Also delete the git tag when pruning an old GitHub Release (default: keep git tags)
+  --overwrite       Overwrite the latest release (force-move tag v<version> to HEAD, replace assets & notes)
   --skip-cargo      Skip cargo build (re-pack binaries already in rust/dist/)
-  --dry-run         For publish/all: print planned GitHub mutations without executing them
+  --dry-run         For publish/prune/all: print planned GitHub mutations without executing them
   -h, --help        Show this help`)
 }
 
@@ -525,6 +731,10 @@ if (import.meta.main) {
       repo: { type: "string" },
       manifest: { type: "string" },
       previous: { type: "string" },
+      keep: { type: "string", default: "2" },
+      "no-prune": { type: "boolean", default: false },
+      "cleanup-tags": { type: "boolean", default: false },
+      overwrite: { type: "boolean", default: false },
       "skip-cargo": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -536,6 +746,13 @@ if (import.meta.main) {
     printHelp()
     process.exit(values.help ? 0 : 2)
   }
+
+  const keepRaw = Number(values.keep)
+  if (!Number.isInteger(keepRaw) || keepRaw < 1) {
+    console.error(`Invalid --keep value ${JSON.stringify(values.keep)}: must be an integer >= 1`)
+    process.exit(2)
+  }
+  const keep = values["no-prune"] ? 0 : keepRaw
 
   const version = values.version ?? (await releaseVersion())
   const channel: ReleaseChannel = releaseChannel(values.channel ?? (version.includes("-dev.") ? "dev" : version.includes("-beta.") ? "beta" : "stable"))
@@ -549,11 +766,13 @@ if (import.meta.main) {
     const manifestPath = path.resolve(values.manifest ?? path.join(outDir, `manifest-${channel}.json`))
     await cmdValidate({ manifestPath, outDir, previousVersion: values.previous })
   } else if (command === "publish") {
-    await cmdPublish({ version, channel, outDir, repo, dryRun: values["dry-run"] })
+    await cmdPublish({ version, channel, outDir, repo, dryRun: values["dry-run"], keep, cleanupTags: values["cleanup-tags"], overwrite: values.overwrite })
+  } else if (command === "prune") {
+    await cmdPrune({ repo, keep: keepRaw, dryRun: values["dry-run"], cleanupTags: values["cleanup-tags"] })
   } else if (command === "all") {
     const built = await cmdBuild({ version, channel, outDir, repo, targets, skipCargo: values["skip-cargo"] })
     await cmdValidate({ manifestPath: built.manifestPath, outDir, previousVersion: values.previous })
-    await cmdPublish({ version, channel, outDir, repo, dryRun: values["dry-run"] })
+    await cmdPublish({ version, channel, outDir, repo, dryRun: values["dry-run"], keep, cleanupTags: values["cleanup-tags"], overwrite: values.overwrite })
   } else {
     console.error(`Unknown command: ${command}`)
     printHelp()

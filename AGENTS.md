@@ -88,6 +88,88 @@ Handy scripts: `bun run dev` (extension watch mode, dev builds), `bun run typech
 `bun run setup` does extension build + CLI install in one go (upstream's flow; after rebranding,
 see §5 before running install-mode commands).
 
+### 3a. Publishing fork distributions (agent playbook)
+
+**Distribution model (100% local compilation, no GitHub Actions):**
+- **Binaries + unpacked extension zip** → **GitHub Releases** (`sjseo298/browse`, tag `v<version>`).
+- **Channel manifest + install scripts** → **`gh-pages` branch** (`https://sjseo298.github.io/browse/release/browse/cli/<channel>.json`, `install`, `install.ps1`).
+- **Retention policy (max 2 distributions):** Keep ONLY the **2 latest GitHub Releases** (the most recent + the immediately previous one) and matching local `release/dist-<version>` folders. `scripts/dist.ts publish` / `all` enforces `--keep 2` automatically (and `bun scripts/dist.ts prune --keep 2` runs it standalone). `gh-pages` only ever stores the current active manifest + installers.
+
+**Prerequisites & gotchas:**
+1. `rustup` toolchain **`1.99.1`** + target `x86_64-apple-darwin` (`source "$HOME/.cargo/env"`), `bun` (1.4.4), and `gh` CLI authenticated as `sjseo298`.
+2. **`gh` fork gotcha:** Running `gh` without `--repo` in a fork may default to `upstream` (`anomalyco/browse`). ALWAYS pass `--repo sjseo298/browse` to manual `gh` commands (`scripts/dist.ts` passes it automatically).
+3. On Apple Silicon macOS, `scripts/dist.ts` builds `darwin-arm64`, `darwin-x64`, and `darwin-x64-baseline` by default (`linux-x64` / `windows-x64` are omitted unless cross-built locally and passed via `--target`).
+4. Extension zip (`browse-extension-<version>.zip`) intentionally preserves `manifest.key` so unpacked Chrome installs receive the trusted extension ID.
+
+#### A. Publishing a new version (recommended)
+
+```sh
+# 1) Check current version and existing releases
+cat cli/package.json | grep '"version"'
+gh release list --repo sjseo298/browse --limit 10
+
+# 2) Bump version across all 5 files + add changelog/<V>.md
+bun scripts/version.ts set 0.1.7
+# Create changelog/0.1.7.md summarizing changes
+
+# 3) Run full checks before tagging
+source "$HOME/.cargo/env"
+bun run typecheck
+bun test ./test
+(cd rust && cargo test --workspace --locked -- --test-threads=1)
+# Run §5 rebrand audit grep
+
+# 4) Commit, tag, and push
+git add -A && git commit -m "release: v0.1.7"
+git tag v0.1.7
+git push origin dev v0.1.7
+
+# 5) Build locally, validate decide(), publish Release + gh-pages, and prune old releases (keep 2)
+bun scripts/dist.ts all
+```
+
+**Verify live after publishing:**
+```sh
+gh release list --repo sjseo298/browse --limit 10   # must list at most 2 releases (v0.1.7 + v0.1.6)
+gh release view v0.1.7 --repo sjseo298/browse --json assets
+curl -fsS https://sjseo298.github.io/browse/release/browse/cli/stable.json
+curl -fsS https://sjseo298.github.io/browse/install | head -5
+```
+
+#### B. Overwriting the latest release (`--overwrite`)
+
+Use `--overwrite` **only** when the user explicitly wants to replace the **latest** published release (e.g. a quick fix on `dev` without bumping the version number):
+
+```sh
+# 1) Commit your fix on dev and push (tracked files must be clean)
+git add -A && git commit -m "fix: ..." && git push origin dev
+# (Optionally update changelog/<V>.md and commit it too)
+
+# 2) Preview first, then execute overwrite (also prunes any releases beyond latest 2)
+bun scripts/dist.ts all --overwrite --dry-run
+bun scripts/dist.ts all --overwrite
+```
+
+- **Safety guards built into `--overwrite`:** refuses if tracked files have uncommitted changes, refuses if `v<version>` is not the current latest non-draft release on GitHub, force-moves git tag `v<version>` to `HEAD`, updates release notes, replaces assets (`--clobber` + removes stale assets), and increments `sequence` on `gh-pages`.
+- **Auto-update caveat:** `rust/crates/browse/src/update.rs:253` passes `sha256: None` to `protocol::decide()`, which compares only `candidate == running.version`. Fresh `curl | bash` installs download the overwritten binary and new SHA-256, **but relays already running `<V>` report `up_to_date`** and will not auto-update until a higher/different version string is published. To force existing relays to auto-update, publish a new patch version instead.
+
+#### C. Pruning old releases & rolling back
+
+- **Manual retention check / cleanup:**
+  ```sh
+  bun scripts/dist.ts prune --keep 2 --dry-run   # preview what would be deleted
+  bun scripts/dist.ts prune --keep 2             # delete older GitHub Releases & release/dist-* dirs
+  # Pass --cleanup-tags only if you also want to delete git tags of deleted fork releases (do NOT delete upstream tags).
+  ```
+- **Rollback to the immediately previous release (`<V_prev>`):** Because `--keep 2` always preserves the immediately previous release on GitHub Releases, you can roll back `gh-pages` cleanly (`protocol::decide()` compares version equality, so `0.1.6 != 0.1.7` triggers auto-downgrade too):
+  ```sh
+  git worktree add /tmp/browse-rollback v<V_prev>
+  (cd /tmp/browse-rollback && bun install --frozen-lockfile && bun scripts/dist.ts build --version <V_prev>)
+  # Or if release/dist-<V_prev> + rust/dist still match v<V_prev>, from repo root:
+  bun scripts/dist.ts publish --version <V_prev> --no-prune
+  git worktree remove /tmp/browse-rollback
+  ```
+
 ## 4. Upstream sync procedure (run after every merge)
 
 1. **Merge, don't rebase-publish:**
@@ -148,7 +230,7 @@ renaming either breaks the extension/relay/store pairing contract or the release
 | 16 | Docs links to upstream opencode (e.g. `opencode.ai/v2/docs/mcp-servers` in README agent table) | upstream docs | `https://github.com/sjseo298/opencode` docs for the fork's improvements; upstream docs acceptable *as links to third-party docs* for other agents' MCP config | Distinguish "we are" (sjseo298) from "links to others' docs" (allowed). |
 | 17 | `rust/crates/browse/src/method.rs` (install detection) | `@opencode` scope only | accept **both** `@sjseo298` and `@opencode` in `is_package`, `platform_binary`, `package_install`, the pnpm store candidates/links; npm registry flag `--@sjseo298:registry`; pnpm 11 test fixture `links/@sjseo298` | Behavior change, not just branding: a machine with a pre-fork upstream install (`node_modules/@opencode/browse`) must keep being detected. Re-apply after any upstream merge that touches `method.rs`. |
 | 18 | `install`, `install.ps1` (manifest target URLs) | relative `/...` URLs only | accept **both** `https://...` absolute URLs and `/...` relative paths | Behavior change: GitHub Pages serves only the JSON manifests while binary tarballs are hosted as GitHub Releases assets (`https://github.com/sjseo298/browse/releases/download/...`); Rust `file_url()` (`update.rs:270`) already supports `https://`. Re-apply if upstream modifies URL checks in either installer. |
-| 19 | `scripts/dist.ts` + `gh-pages` distribution | upstream GitHub Actions (`release.yml` + Anomaly release service + CWS) | 100% local build (`cargo build --release --locked`, unpacked extension zip keeping `manifest.key`) + `gh` publish (`v<version>` Release assets + `gh-pages` branch root with `.nojekyll`, `install`, `install.ps1`, `release/browse/cli/<channel>.json`) | `/release/` is gitignored on `dev`, so manifests live on `gh-pages` (`/`). Local prerequisite: `rustup` toolchain `1.99.1` + `x86_64-apple-darwin` target (and `gh` CLI). |
+| 19 | `scripts/dist.ts` + `gh-pages` distribution | upstream GitHub Actions (`release.yml` + Anomaly release service + CWS) | 100% local build (`cargo build --release --locked`, unpacked extension zip keeping `manifest.key`) + `gh` publish (`v<version>` Release assets + `gh-pages` branch root with `.nojekyll`, `install`, `install.ps1`, `release/browse/cli/<channel>.json`) + `--keep 2` retention (`prune`) + `--overwrite` latest release | `/release/` is gitignored on `dev`, so manifests live on `gh-pages` (`/`). Local prerequisite: `rustup` toolchain `1.99.1` + `x86_64-apple-darwin` target (and `gh` CLI). Keep max 2 GitHub Releases (latest + previous). |
 
 ### Rebrand audit (must be clean after every merge)
 

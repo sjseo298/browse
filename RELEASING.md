@@ -22,72 +22,33 @@ target doesn't use AVX2), and `@sjseo298/browse` depends only on the seven base 
 `bun scripts/npm-package.ts platforms --binaries rust/dist --out <dir>` (with `--target <name>` for only some) and
 `bun scripts/npm-package.ts main --out <dir>`.
 
-Releases run only in GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)). Nobody has release
-secrets locally, and nothing is built, tagged or published from a laptop. Work lands on `dev`, the default branch.
+In this fork (`sjseo298/browse`), **releases are built and published 100% locally** via
+[scripts/dist.ts](scripts/dist.ts) — do **not** run upstream's `.github/workflows/release.yml` (which targets
+Anomaly's OIDC release service, AWS secrets, npm trusted publishing, and Chrome Web Store). Work lands on `dev`.
 
-| Mode | Starts from | Version | Publishes |
-| --- | --- | --- | --- |
-| dev | every push to `dev` (not Markdown-only) | `<next patch>-dev.<run>`, e.g. `0.2.1-dev.57` | the [release service](#the-release-service) channel `dev` (`browse-extension-<version>.zip`, loaded unpacked, and every CLI binary target), then npm dist-tag `dev` (the binaries, then `@sjseo298/browse`) |
-| stable | **Actions → Release → Run workflow** on `dev` with a bump or version and release notes | `x.y.z` | tag `v<version>`, the [release service](#the-release-service) channel `stable` (the extension zip and every CLI binary target), npm `latest`, the public Chrome Web Store item (`browse-extension-<version>.zip`), the GitHub release |
-| check | the same button with bump `check` and no version, on any branch (`gh workflow run release.yml --ref <branch>`) | `cli/package.json` | nothing: builds, checks and attests the stable artifacts and runs every publish script, the release service included, as a dry run |
+## Cutting a fork release (local build + retention of 2 releases)
 
-There's no `production` branch: browse has no website. If it gets one, the site deploys from `production`, as in
-opencode and Hex; releases still come from `dev`.
+See [AGENTS.md §3a](AGENTS.md#3a-publishing-fork-distributions-agent-playbook) for the full agent playbook. Summary:
 
-## Cutting a stable release
+1. **Bump version & write changelog:** `bun scripts/version.ts set <version>` (updates `cli/package.json`, `package.json`,
+   `public/manifest.json`, `rust/Cargo.toml`, `rust/Cargo.lock`) and create `changelog/<version>.md`.
+2. **Run checks:** `bun run typecheck`, `bun test ./test`, `(cd rust && cargo test --workspace --locked -- --test-threads=1)`,
+   and the rebrand audit (`AGENTS.md §5`).
+3. **Commit, tag, and push:** `git commit -m "release: v<version>" && git tag v<version> && git push origin dev v<version>`.
+4. **Build, validate, publish, and prune:** `bun scripts/dist.ts all`
+   - Compiles macOS targets (`darwin-arm64`, `darwin-x64`, `darwin-x64-baseline`), builds the unpacked extension zip
+     (preserving `manifest.key`), validates `decide()`, uploads assets to GitHub Release `v<version>`, updates `gh-pages`,
+     and **automatically prunes older GitHub Releases and `release/dist-*` folders so only the latest 2 distributions
+     remain** (the newest release and the immediately previous one; standalone via `bun scripts/dist.ts prune --keep 2`).
+5. **Overwriting the latest release (`--overwrite`):** If a quick fix should replace the current latest release without
+   bumping the version, commit the fix to `dev` and run `bun scripts/dist.ts all --overwrite` (force-moves tag `v<version>`
+   to `HEAD`, updates release notes, replaces assets, and bumps `sequence` on `gh-pages`). Note that existing relays
+   already running that exact version string treat `candidate == running.version` as `up_to_date`
+   (`rust/crates/browse/src/update.rs:253` passes `sha256: None`), while fresh `curl | bash` installs get the new binary;
+   bump a patch version whenever existing relays must auto-update.
 
-1. Write the notes: `bun run release --draft` writes `release-notes.md` from the commits since the last tag. The format
-   is a summary line, then `## Major` (a `### Title`, a sentence or two, an optional `Icon: icons/<slug>.svg`),
-   `## Improvements` and `## Fixes`, one line each, written for the person using it. No `TODO` may be left.
-2. Dispatch: **Actions → Release → Run workflow**, branch `dev`, bump `patch`/`minor`/`major` (or an exact version)
-   and the notes. The notes field is a single line in the browser, so `bun run release patch release-notes.md` does
-   the same with `gh workflow run`.
-3. The run (only repository admins and maintainers may start one; `plan` checks the dispatching actor):
-
-```
-plan    version from the newest of cli/package.json and the newest v* tag, + bump (the tag exists before any publish,
-        so a release commit that missed dev still counts), on a commit that contains the newest tag's commit; actor is
-        admin or maintain; notes well-formed; not on npm yet
-tag     commits the versions (cli/package.json, package.json, public/manifest.json, rust/Cargo.toml, rust/Cargo.lock)
-        and changelog/<version>.md from the notes on the dispatched commit, pushes only the tag v<version> (deploy key);
-        git, sed, awk and jq only
-build   from the tag: install, typecheck, extension and cargo tests, release:check (zip + npm launcher tarball +
-        artifact checks), SHA256SUMS digest
-build-binary    one job per Rust build (linux gnu/musl x64/arm64 with cargo-zigbuild, glibc 2.17; macOS arm64/x64 on
-        macos-15; windows-x64 with a static C runtime), version and build id baked in; no secrets
-build-binaries  packs and checks the @sjseo298/browse-<target> tarballs (every target; baseline = base binary), runs
-        the linux-x64 ones: the install script against a local release service, relay + MCP, npm install of
-        @sjseo298/browse with its platform package
-sign-macos      optional (repository variable MACOS_SIGNING=true): Developer ID signs the macOS binaries; skipped now
-sign-windows    optional (repository variable WINDOWS_SIGNING=true): Authenticode signs the Windows binaries (Azure
-        Trusted Signing; Smart App Control blocks an unsigned browse.exe); skipped now
-attest  build provenance for the zip and every tarball (Sigstore)
-publish-release-service       the extension and every CLI binary target to the release service (channel dev or
-        stable); a check run prints the list and publishes nothing
-publish-npm  +  publish-cws   npm latest (--ignore-scripts, provenance; the platform packages first, then
-        @sjseo298/browse) and Chrome Web Store upload + submit (none when the extension is unchanged)
-publish-github-release        the release on v<version>: notes, zip, tarball, SHA256SUMS, attestation
-push-release-to-dev           pushes the release commit to dev (deploy key), so dev builds count up from it
-```
-
-The store review takes hours to a few days (the job summary shows `PENDING_REVIEW`); `publish-cws` cancels an
-earlier version still in review, so the newest build is the one reviewed. When the zip is the extension the store
-already has, with only the manifest `version`/`version_name` changed (a CLI or packaging release), it uploads and
-submits nothing, says so in the job summary, and the release goes on: the store keeps the version it has, and the
-GitHub release and the release commit to dev still run. Every running relay checks the release service at launch and
-hourly, in every update mode; binary and npm installs switch when no agent is using the browser;
-the Chrome Web Store updates the extension.
-
-**If a job fails**, fix it and rerun the failed jobs. Publishing is idempotent: a version that's already on npm,
-already submitted to the store, or already current on the release service is skipped, and the tag is reused when it
-holds the same tree.
-
-A `publish-cws` 400 from `:publish` saying the submission "does not meet the requirements to be published in the
-store" means a dashboard field needs fixing, not the build: correct it in the
-[developer dashboard](https://chrome.google.com/webstore/devconsole) (most often a new manifest permission's
-justification under **Privacy practices**, worded from [store/listing.md](store/listing.md)), click **Submit for
-review** there, then rerun the failed job. The rerun sees the version in review and skips the store step, letting the
-GitHub release and the release commit to dev go ahead.
+*(The upstream GitHub Actions release pipeline `.github/workflows/release.yml` and `.github/release/*.sh` remain in the
+repository only for upstream merge compatibility and are not executed in this fork.)*
 
 ## The security boundary
 
