@@ -191,8 +191,10 @@ Anything else goes to ``browse install``, e.g. --remote, --agent claude or --no-
                 $entry = $manifest.release.targets.PSObject.Properties["windows-$target"]
                 if (-not $entry) { throw "the $channel release has no windows-$target build" }
                 $url = [string]$entry.Value.url
-                if (-not $url.StartsWith("/")) { throw "unexpected download URL $url" }
-                $url = ($service -replace "/release$", "") + $url
+                if (-not $url.StartsWith("https://")) {
+                    if (-not $url.StartsWith("/")) { throw "unexpected download URL $url" }
+                    $url = ($service -replace "/release$", "") + $url
+                }
                 $expectedSha = [string]$entry.Value.sha256
                 $expectedSize = [long]$entry.Value.size
                 $filename = Split-Path $url -Leaf

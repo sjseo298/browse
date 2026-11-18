@@ -451,6 +451,7 @@ download_release() (
     expected_sha=$(field sha256 "$target_json")
     expected_size=$(field size "$target_json")
     case "$url" in
+        https://*) ;;
         /*) url="$origin$url" ;;
         *) fail "unexpected download URL $url" ;;
     esac

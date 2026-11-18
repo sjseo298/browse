@@ -38,11 +38,14 @@ There's always exactly one `browse`: a global package install is left to its pac
 to it, and a leftover `~/.local/bin/browse` from an earlier install is removed), and agents run the same `browse` your
 terminal does. If `browse install` finds another `browse` on your PATH it tells you which one and how to remove it.
 
-The install script reads the channel's manifest from [the release service](https://sjseo298.github.io/browse/release), downloads
-the binary for this computer and checks its size and SHA-256 before installing it. `--channel stable|beta|dev` picks
-the channel (`stable` by default); `--version <version>` installs a specific version from npm, checked against npm's
-published SHA-512 integrity. With npm, `@sjseo298/browse@dev` is the dev channel. The npm package is a small Node
-launcher (Node 22+) that runs the native binary npm installed for your platform.
+The install script reads the channel's manifest from [the release service](https://sjseo298.github.io/browse/release)
+(`gh-pages` on `sjseo298/browse`), downloads the binary tarball from the release's GitHub Releases assets and checks
+its size and SHA-256 before installing it. `--channel stable|beta|dev` picks the channel (`stable` by default);
+`--version <version>` installs a specific version from npm, checked against npm's published SHA-512 integrity.
+Fork releases are built locally on macOS (`macos-arm64`, `macos-x64`, `macos-x64-baseline`); for the Chromium
+extension, download `browse-extension-<version>.zip` from [GitHub Releases](https://github.com/sjseo298/browse/releases)
+(or build `dist/` locally with `bun run build`) and load it unpacked in `chrome://extensions` with **Developer mode** on
+(the zip preserves `manifest.key` so Chrome assigns the extension ID trusted by the relay).
 
 ### What `browse install` does
 

@@ -114,15 +114,41 @@ extension protocols). To try a dev extension, download the zip, unpack it and lo
 `<cache root>/extension`; that is gone with it.) Dev builds never go to the Chrome Web Store: every upload is
 reviewed, too slow for a build per push.
 
-## The release service
+## The release service (fork distribution)
 
-`https://sjseo298.github.io/browse/release` is this fork's release service: static hosting (sjseo298.github.io)
-serving manifests and tarballs that speak the release protocol of
-[anomalyco/release](https://github.com/anomalyco/release) (spec: its `docs/protocol.md`). A job in a named
-environment trades its GitHub OIDC token for a publish session through `client.sh`
-([.github/release/publish-release-service.sh](.github/release/publish-release-service.sh)); if the service
-enforces a publisher registry it checks the token against `registry/browse.json`
-([scripts/release-registry.json](scripts/release-registry.json)).
+`https://sjseo298.github.io/browse/release` is this fork's release service, hosted statically on the **`gh-pages` branch**
+of `sjseo298/browse` (GitHub Pages source `gh-pages` at `/`; `/release/` is gitignored on `dev`, so manifests live on
+`gh-pages` without polluting `dev`). It speaks the client release protocol of
+[anomalyco/release](https://github.com/anomalyco/release) (spec: its `docs/protocol.md`).
+
+**100% local build, GitHub only as publish target (no GitHub Actions):**
+
+- **Builder & publisher:** [scripts/dist.ts](scripts/dist.ts) (`build`, `validate`, `publish`, `all`), run on the maintainer's
+  machine using the local Rust toolchain (`1.99.1`, pinned in `.github/workflows/ci.yml`) and `gh` CLI (no CI runners,
+  no AWS/OIDC secrets, no Chrome Web Store upload).
+- **Host targets:** on Apple Silicon macOS, `build` compiles `darwin-arm64` (native) and `darwin-x64` (`rustup target add x86_64-apple-darwin`),
+  and packs `macos-arm64`, `macos-x64`, and `macos-x64-baseline` (`opencode-browse-darwin-<arch>-<version>.tgz`, layout
+  `package/bin/browse` + `package.json` + `LICENSE`) plus the **unpacked** extension zip `browse-extension-<version>.zip`
+  (keeping `manifest.key` so unpacked Chrome installs receive the trusted extension ID). `linux-x64` / `windows-x64` are
+  omitted unless cross-built locally (e.g. Docker/zig or a native host) and passed via `--target`.
+- **Where artifacts live:** tarballs and the extension zip are uploaded to **GitHub Releases** (`v<version>`), and
+  `gh-pages` serves:
+  - `release/browse/cli/<channel>.json` (`schema: 1`, `app: "browse"`, `artifact: "cli"`, `rollout_percent: 100`,
+    `distributions: [{ kind: "direct" }]`, and flat `targets.<target>` entries with absolute `https://` GitHub Release URLs,
+    `size`, and `sha256`; `release.version` appears first in `release` for the shell installer parser)
+  - `install` and `install.ps1` (patched in the fork to accept both absolute `https://` URLs and relative `/...` paths)
+- **Local release workflow:**
+  1. `bun scripts/version.ts set <version>` + update `changelog/<version>.md`, commit and push to `origin/dev`, then
+     `git tag v<version> && git push origin v<version>`.
+  2. `bun scripts/dist.ts all --version <version>` — builds tarballs + extension zip, validates the generated manifest
+     with `decide()` (`cli/src/update/release-service.ts`), creates/updates GitHub Release `v<version>`, pushes
+     `gh-pages` (incrementing `sequence` idempotently), and enables GitHub Pages via `gh api` if not yet active.
+
+Every running fork relay still checks `https://sjseo298.github.io/browse/release/browse/cli/<channel>.json` at launch
+and hourly (`rust/crates/browse/src/update.rs`, `file_url()` accepts `https://` directly), verifying size and SHA-256
+before replacing the binary in place.
+
+*(Below are upstream's reference notes for the original multi-OS release service layout and conventions.)*
 
 | Artifact | Target | File | Latest link |
 | --- | --- | --- | --- |

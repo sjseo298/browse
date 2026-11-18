@@ -707,7 +707,7 @@ mod tests {
 
         // pnpm 11: the global virtual store in $PNPM_HOME/store/v11/links, linked from global/v11/<install>, which a
         // stable alias names; the platform package is a sibling link to its own store folder.
-        let links = "pnpm11/store/v11/links/@opencode";
+        let links = "pnpm11/store/v11/links/@sjseo298";
         let package = format!("{links}/browse/{V}/aaa/node_modules/@sjseo298/browse");
         let launcher = tree.package(&package);
         let binary = tree.platform(&format!("{links}/{P}/{V}/bbb/node_modules/@opencode/{P}"));
