@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "app": "browse",
+  "artifact": "cli",
+  "channel": "stable",
+  "sequence": 1,
+  "published_at": "2026-11-18T23:15:38.503Z",
+  "release": {
+    "version": "0.1.6",
+    "notes_url": "https://github.com/sjseo298/browse/releases/tag/v0.1.6",
+    "rollout_percent": 100,
+    "targets": {
+      "macos-arm64": {
+        "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-darwin-arm64-0.1.6.tgz",
+        "size": 2837946,
+        "sha256": "1f7d2097bc062487ad9ffed829f919f61951e83fbb59467c7f5b476aaeb3eb5b"
+      },
+      "macos-x64": {
+        "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-darwin-x64-0.1.6.tgz",
+        "size": 3042273,
+        "sha256": "fa6fe38e8850f2e7a3aa8b2a3152266fc4ac4ff51937e783e948b46628a756f0"
+      },
+      "macos-x64-baseline": {
+        "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-darwin-x64-baseline-0.1.6.tgz",
+        "size": 3042283,
+        "sha256": "26985710fb067628f66f42ab6eced8626d9ec82fce9377ff1215cca38dda1596"
+      }
+    },
+    "distributions": [
+      {
+        "kind": "direct"
+      }
+    ]
+  }
+}
