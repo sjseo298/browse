@@ -34,17 +34,29 @@ function enhancedEnv(extra: Record<string, string> = {}): Record<string, string>
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) env[key] = value
   }
-  const cargoBin = path.join(os.homedir(), ".cargo", "bin")
   const currentPath = env.PATH ?? ""
-  if (existsSync(cargoBin) && !currentPath.split(path.delimiter).includes(cargoBin)) {
-    env.PATH = `${cargoBin}${path.delimiter}${currentPath}`
+  const parts = currentPath ? currentPath.split(path.delimiter) : []
+  for (const binDir of [path.join(os.homedir(), ".cargo", "bin"), "/opt/homebrew/bin"]) {
+    if (existsSync(binDir) && !parts.includes(binDir)) {
+      parts.unshift(binDir)
+    }
   }
+  env.PATH = parts.join(path.delimiter)
   return { ...env, ...extra }
+}
+
+function hasLinuxCrossTools(): boolean {
+  const env = enhancedEnv()
+  const cargoBin = path.join(os.homedir(), ".cargo", "bin")
+  const hasZigbuild = existsSync(path.join(cargoBin, "cargo-zigbuild"))
+  const pathHasZig = (env.PATH ?? "").split(path.delimiter).some((dir) => existsSync(path.join(dir, "zig")))
+  return hasZigbuild && pathHasZig
 }
 
 function defaultTargetsForHost(): string[] {
   if (process.platform === "darwin") {
-    return ["darwin-arm64", "darwin-x64", "darwin-x64-baseline"]
+    const base = ["darwin-arm64", "darwin-x64", "darwin-x64-baseline"]
+    return hasLinuxCrossTools() ? [...base, "linux-x64", "linux-x64-baseline"] : base
   }
   if (process.platform === "linux") {
     return process.arch === "arm64" ? ["linux-arm64"] : ["linux-x64", "linux-x64-baseline"]
@@ -88,8 +100,15 @@ async function buildRustBinary(buildName: string, version: string): Promise<stri
   const rustDir = path.join(root, "rust")
   const env = enhancedEnv({ BROWSE_VERSION: version })
 
-  console.log(`→ Building Rust binary for ${buildName} (${triple}) with BROWSE_VERSION=${version}...`)
-  await $`cargo build --release --locked -p browse --target ${triple}`.cwd(rustDir).env(env)
+  const useZigbuild = buildName.startsWith("linux-") && process.platform !== "linux"
+  if (useZigbuild) {
+    const zigTarget = `${triple}.2.17`
+    console.log(`→ Cross-building Rust binary for ${buildName} (${zigTarget}) via cargo zigbuild with BROWSE_VERSION=${version}...`)
+    await $`cargo zigbuild --release --locked -p browse --target ${zigTarget}`.cwd(rustDir).env(env)
+  } else {
+    console.log(`→ Building Rust binary for ${buildName} (${triple}) with BROWSE_VERSION=${version}...`)
+    await $`cargo build --release --locked -p browse --target ${triple}`.cwd(rustDir).env(env)
+  }
 
   const built = path.join(rustDir, "target", triple, "release", "browse")
   if (!existsSync(built)) throw new Error(`Expected Rust binary not found at ${built}`)

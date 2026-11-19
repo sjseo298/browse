@@ -24,12 +24,28 @@ pub fn env_port() -> Option<u16> {
     std::env::var("OPENCODE_BROWSER_PORT").ok().and_then(|raw| raw.trim().parse::<u16>().ok()).filter(|p| *p > 0)
 }
 
+pub fn config_port(paths: &Paths) -> Option<u16> {
+    paths::read_json::<serde_json::Value>(&paths.relay_config())?
+        .get("port")?
+        .as_u64()
+        .and_then(|p| u16::try_from(p).ok())
+        .filter(|p| *p > 0)
+}
+
 pub fn configured_port() -> u16 {
     env_port().unwrap_or(DEFAULT_PORT)
 }
 
+pub fn configured_port_for(paths: &Paths) -> u16 {
+    env_port().or_else(|| config_port(paths)).unwrap_or(DEFAULT_PORT)
+}
+
 pub fn pinned() -> bool {
     env_port().is_some()
+}
+
+pub fn pinned_for(paths: &Paths) -> bool {
+    env_port().is_some() || config_port(paths).is_some()
 }
 
 pub fn read_relay_state(paths: &Paths, configured: u16) -> Option<RelayState> {
@@ -55,12 +71,12 @@ pub fn write_last_port(paths: &Paths, configured: u16, port: u16) -> std::io::Re
     paths::write_private_json(&paths.last_port(configured), &serde_json::json!({ "port": port }))
 }
 
-/// The port clients should dial: a pinned port, else a live relay.json's, else 19988.
+/// The port clients should dial: a pinned port (env or relay config), else a live relay.json's, else 19988.
 pub fn resolve_port(paths: &Paths) -> u16 {
-    if let Some(port) = env_port() {
+    if let Some(port) = env_port().or_else(|| config_port(paths)) {
         return port;
     }
-    let configured = configured_port();
+    let configured = configured_port_for(paths);
     read_relay_state(paths, configured).filter(|s| crate::util::process_alive(s.pid)).map(|s| s.port).unwrap_or(DEFAULT_PORT)
 }
 

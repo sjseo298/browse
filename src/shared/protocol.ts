@@ -42,13 +42,170 @@ export type AgentRelayState = {
   relay: { address: string; remote: boolean }
   /** What the connected relay calls this browser; agents pass `id` to use it when several are connected. */
   browser?: { id: string; name: string }
+  /** All configured relay connections (local + SSH/remote devcontainers) running simultaneously. */
+  relays?: readonly RelayEntryState[]
+  /** Which relay receives user tabs lent via the toolbar button (`local` or a relay id). */
+  lendTarget?: string
+}
+
+export type RelayProfile = {
+  readonly id: string
+  readonly label: string
+  /** Empty means automatic local loopback (127.0.0.1 + fallback port discovery). */
+  readonly address: string
+  readonly auto: boolean
+  readonly enabled: boolean
+}
+
+export type RelayEntryState = {
+  readonly id: string
+  readonly label: string
+  readonly enabled: boolean
+  readonly auto: boolean
+  status: AgentRelayStatus
+  pairing: PairingSource
+  tabs: { tabId: number; status?: PageStatus }[]
+  update?: AgentRelayUpdate
+  overrides?: RelayOverrides
+  autoUpdate?: RelayAutoUpdate
+  skew?: ProtocolSkew
+  codeRejected?: boolean
+  unpacked?: boolean
+  relay: { address: string; remote: boolean }
+  browser?: { id: string; name: string }
 }
 
 /** chrome.storage.local, set on the status page: this browser's name for agents. Unset: "<browser> on <computer>". */
 export const BROWSER_NAME_KEY = "browserName"
 
-/** chrome.storage.local, set on the status page: a relay on another computer, `host` or `host:port`. Unset: this one. */
+/** chrome.storage.local, legacy single-relay address key (migrated into RELAY_PROFILES_KEY). */
 export const RELAY_ADDRESS_KEY = "agentRelayAddress"
+/** chrome.storage.local: list of RelayProfile entries connected simultaneously. */
+export const RELAY_PROFILES_KEY = "agentRelayProfiles"
+/** chrome.storage.local: target relay id when lending a user tab with the toolbar button. */
+export const LEND_TARGET_KEY = "agentRelayLendTarget"
+export const DEFAULT_LOCAL_RELAY_ID = "local"
+
+export function defaultLocalRelayProfile(enabled = true): RelayProfile {
+  return { id: DEFAULT_LOCAL_RELAY_ID, label: "Local", address: "", auto: true, enabled }
+}
+
+export function sanitizeRelayId(raw: string): string {
+  const slug = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32)
+  return slug || `relay-${Math.random().toString(36).slice(2, 8)}`
+}
+
+export function isValidRelayProfile(value: unknown): value is RelayProfile {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const v = value as Record<string, unknown>
+  return (
+    typeof v.id === "string" &&
+    v.id.length > 0 &&
+    typeof v.label === "string" &&
+    typeof v.address === "string" &&
+    typeof v.auto === "boolean" &&
+    typeof v.enabled === "boolean"
+  )
+}
+
+/**
+ * Resolves configured relay profiles from storage, migrating legacy `agentRelayAddress` if `agentRelayProfiles` is
+ * absent. Keeps an automatic `local` profile enabled unless the user explicitly had a non-empty legacy remote address.
+ */
+export function resolveRelayProfiles(stored: Record<string, unknown>): RelayProfile[] {
+  const rawList = stored[RELAY_PROFILES_KEY]
+  if (Array.isArray(rawList)) {
+    const valid = rawList.filter(isValidRelayProfile)
+    if (valid.length > 0) return valid
+  }
+  const legacyRaw = stored[RELAY_ADDRESS_KEY]
+  const legacy = typeof legacyRaw === "string" ? legacyRaw.trim() : ""
+  const parsed = relayAddress(legacy)
+  if (!legacy || !parsed || (parsed.host === "127.0.0.1" && parsed.port === undefined)) {
+    return [defaultLocalRelayProfile(true)]
+  }
+  const addr = parsed.port ? `${parsed.host}:${parsed.port}` : parsed.host
+  return [
+    defaultLocalRelayProfile(false),
+    { id: "remote-1", label: parsed.host === "127.0.0.1" ? `Port ${parsed.port ?? 19988}` : parsed.host, address: addr, auto: false, enabled: true },
+  ]
+}
+
+export function aggregateRelayState(
+  profiles: readonly RelayProfile[],
+  states: ReadonlyMap<string, AgentRelayState>,
+  lendTarget: string,
+): AgentRelayState {
+  const relays: RelayEntryState[] = profiles.map((p) => {
+    const s = states.get(p.id)
+    if (s) {
+      return {
+        id: p.id,
+        label: p.label,
+        enabled: p.enabled,
+        auto: p.auto,
+        status: s.status,
+        pairing: s.pairing,
+        tabs: s.tabs,
+        ...(s.update ? { update: s.update } : {}),
+        ...(s.overrides ? { overrides: s.overrides } : {}),
+        ...(s.autoUpdate ? { autoUpdate: s.autoUpdate } : {}),
+        ...(s.skew ? { skew: s.skew } : {}),
+        ...(s.codeRejected ? { codeRejected: s.codeRejected } : {}),
+        ...(s.unpacked ? { unpacked: s.unpacked } : {}),
+        relay: s.relay,
+        ...(s.browser ? { browser: s.browser } : {}),
+      }
+    }
+    return {
+      id: p.id,
+      label: p.label,
+      enabled: p.enabled,
+      auto: p.auto,
+      status: "offline",
+      pairing: "none",
+      tabs: [],
+      relay: { address: p.address || "localhost:19988", remote: !p.auto && !p.address.startsWith("127.0.0.1") },
+    }
+  })
+
+  const enabled = relays.filter((r) => r.enabled)
+  const connected = enabled.filter((r) => r.status === "connected")
+  const incompatible = enabled.find((r) => r.status === "incompatible")
+  const primary =
+    connected.find((r) => r.id === DEFAULT_LOCAL_RELAY_ID) ??
+    connected[0] ??
+    enabled.find((r) => r.id === DEFAULT_LOCAL_RELAY_ID) ??
+    enabled[0] ??
+    relays[0]!
+
+  const status = connected.length > 0 ? "connected" : incompatible ? "incompatible" : primary.status
+  const tabsById = new Map<number, AgentRelayState["tabs"][number]>()
+  for (const r of relays) {
+    for (const tab of r.tabs) tabsById.set(tab.tabId, tab)
+  }
+
+  return {
+    status,
+    pairing: primary.pairing,
+    tabs: Array.from(tabsById.values()),
+    ...(primary.update ? { update: primary.update } : {}),
+    ...(primary.overrides ? { overrides: primary.overrides } : {}),
+    ...(primary.autoUpdate ? { autoUpdate: primary.autoUpdate } : {}),
+    ...(primary.skew && status === "incompatible" ? { skew: primary.skew } : {}),
+    ...(primary.codeRejected ? { codeRejected: true } : {}),
+    ...(primary.unpacked ? { unpacked: true } : {}),
+    relay: primary.relay,
+    ...(primary.browser ? { browser: primary.browser } : {}),
+    relays,
+    lendTarget,
+  }
+}
 export type RelayAddress = { host: string; port?: number }
 /**
  * A typed or stored relay address (`100.64.0.2`, `devbox.tailnet.ts.net:19988`, `[fd7a::1]`, an optional `ws://`), or
@@ -248,13 +405,17 @@ export const STATUS_PORT = "opencode-browser.status"
 export type ToStatusPage =
   | { type: "agents"; state: AgentRelayState }
   | { type: "pairing.link.result"; ok: boolean }
-  /** The outcome of `relay.connect`: the status the new connection settled on, or why nothing was tried. */
-  | { type: "relay.result"; status: AgentRelayStatus | "invalid-address" | "invalid-code"; address?: string }
+  /** The outcome of `relay.connect` / `relay.add`: the status the new connection settled on, or why nothing was tried. */
+  | { type: "relay.result"; id?: string; status: AgentRelayStatus | "invalid-address" | "invalid-code"; address?: string }
 export type FromStatusPage =
   /** Save the relay address (empty or localhost: this computer) and, when given, a pairing code; reconnect and report how it went. */
-  | { type: "relay.connect"; address: string; code: string }
-  | { type: "agents.reconnect" }
+  | { type: "relay.connect"; id?: string; address: string; code: string; label?: string }
+  | { type: "relay.add"; label?: string; address: string; code?: string }
+  | { type: "relay.remove"; id: string }
+  | { type: "relay.toggle"; id: string; enabled: boolean }
+  | { type: "relay.setLendTarget"; id: string }
+  | { type: "agents.reconnect"; id?: string }
   | { type: "tabs.cleanup" }
-  /** A one-time code from install's link (welcome.html#code=…), and the relay port when it isn't 19988. */
-  | { type: "pairing.link"; code: string; port?: number }
-  | { type: "autoUpdate.set"; mode: AutoUpdateMode }
+  /** A one-time code from install's link (welcome.html#code=… or #add=…), and the relay port/address. */
+  | { type: "pairing.link"; code: string; port?: number; address?: string; label?: string }
+  | { type: "autoUpdate.set"; id?: string; mode: AutoUpdateMode }

@@ -157,8 +157,8 @@ pub async fn start(options: ServeOptions, tools: Vec<Arc<dyn Tool>>) -> anyhow::
     crate::util::tune_allocator();
     crate::log::set_path(paths.relay_log());
     crate::secrets::remove_stored_secrets(&paths);
-    let configured = options.port.unwrap_or_else(port::configured_port);
-    let pinned = options.port.is_some() || port::pinned();
+    let configured = options.port.unwrap_or_else(|| port::configured_port_for(&paths));
+    let pinned = options.port.is_some() || port::pinned_for(&paths);
     let host = relay_host(&paths);
     let chosen = port::choose_port(&paths, configured, pinned, host, options.port_candidates.clone()).await?;
     let listener = TcpListener::bind((host, chosen)).await.with_context(|| format!("listen on {host}:{chosen}"))?;

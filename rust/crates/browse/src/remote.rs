@@ -29,6 +29,36 @@ fn set(hostname: &str) -> anyhow::Result<bool> {
     relay::restart()
 }
 
+pub fn set_port(port: Option<u16>) -> anyhow::Result<bool> {
+    let file = config_file();
+    let mut config = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}));
+    if let Some(port) = port {
+        config["port"] = json!(port);
+    } else if let Some(obj) = config.as_object_mut() {
+        obj.remove("port");
+    }
+    update::write_private(&file, format!("{config:#}\n").as_bytes())?;
+    relay::restart()
+}
+
+fn encode_label(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    for byte in label.trim().bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+pub fn add_relay_link(port: u16, code: &str, label: Option<&str>) -> String {
+    let formatted = pairing::format_pairing_code(code);
+    let label_param = label.map(str::trim).filter(|l| !l.is_empty()).map(|l| format!("&label={}", encode_label(l))).unwrap_or_default();
+    format!("chrome-extension://{}/onboarding.html#add=127.0.0.1:{port}&code={formatted}{label_param}", browse_relay::protocol::UNPACKED_EXTENSION_ID)
+}
+
 fn tailnet(ip: &Ipv4Addr) -> bool {
     let [a, b, ..] = ip.octets();
     a == 100 && (64..=127).contains(&b)
@@ -95,31 +125,36 @@ fn addresses() -> (Vec<String>, bool) {
     (hosts, !tail.is_empty())
 }
 
-/// Prints what to enter in browse on the other computer: this relay's address and a fresh pairing code.
-fn print_pairing(agent: bool) -> anyhow::Result<()> {
+/// Prints what to enter in browse on the other computer: this relay's address, SSH 1-click link, and pairing code.
+fn print_pairing(agent: bool, label: Option<&str>) -> anyhow::Result<()> {
     relay::ensure()?;
     let (hosts, on_tailnet) = addresses();
+    let port = relay_api::port();
     let code = pairing::mint_pairing_code(&relay_api::paths(), pairing::PAIRING_CODE_TTL_MS, Some("remote"))?;
+    let link = add_relay_link(port, &code, label);
     println!();
-    println!("In Chrome on the other computer, open browse, choose \"Connect an agent on another computer\" and enter:");
+    println!("In Chrome on the other computer, open this 1-click link (over SSH tunnel to 127.0.0.1:{port}):");
+    println!("  Extension link {link}");
+    println!("Or in browse Settings → Relays → Add relay, enter:");
     println!("  Relay address  {}", hosts.first().map_or("this computer's IP address", String::as_str));
     for host in hosts.iter().skip(1) {
         println!("             or  {host}");
     }
+    println!("  SSH tunnel     127.0.0.1:{port}");
     println!("  Pairing code   {}", pairing::format_pairing_code(&code));
     println!();
     println!("The code works once, within {} minutes. For a new one, run: browse pair", pairing::PAIRING_CODE_TTL_MS / 60_000);
     if !on_tailnet {
-        println!("! browse doesn't encrypt this connection: use it on a network you trust, or over Tailscale, not the open internet.");
+        println!("! browse doesn't encrypt this connection: use it over an SSH tunnel (-L 127.0.0.1:{port}:<container>:{port}) or Tailscale, not the open internet.");
     }
     if agent {
-        println!("Agent: give the user the relay address and pairing code above to enter in browse in their browser. The code works once and expires; `browse pair` prints a new one.");
+        println!("Agent: give the user the relay address and pairing code above (or open the extension link in Chrome) to add this relay without replacing their local one.");
     }
     Ok(())
 }
 
 /// The rest of `browse install --remote`: opens the relay to other computers and prints the address and a code.
-pub fn install(agent: bool) -> anyhow::Result<i32> {
+pub fn install(agent: bool, label: Option<&str>) -> anyhow::Result<i32> {
     let mut status = 0;
     if hostname() == "0.0.0.0" {
         println!("✓ The relay is open to other computers");
@@ -129,12 +164,31 @@ pub fn install(agent: bool) -> anyhow::Result<i32> {
         println!("! The relay is still only reachable from this computer: it's busy. Run `browse set hostname 0.0.0.0` again once no agent is using the browser.");
         status = 1;
     }
-    print_pairing(agent)?;
+    print_pairing(agent, label)?;
     Ok(status)
 }
 
-/// `browse set hostname <127.0.0.1|0.0.0.0>`.
+/// `browse set hostname <127.0.0.1|0.0.0.0>` or `browse set port <1024-65535|auto>`.
 pub fn command(args: &[String]) -> anyhow::Result<i32> {
+    if let [key, value] = args && key == "port" {
+        let parsed = match value.trim() {
+            "auto" | "default" => Some(None),
+            raw => raw.parse::<u16>().ok().filter(|p| *p >= 1024).map(Some),
+        };
+        let Some(port) = parsed else {
+            eprintln!("Usage: browse set port <1024-65535|auto>");
+            return Ok(2);
+        };
+        let restarted = set_port(port).context("couldn't save the relay's port")?;
+        match port {
+            Some(p) => println!("✓ port is {p}"),
+            None => println!("✓ port is auto (default 19988)"),
+        }
+        if !restarted {
+            println!("! The relay is busy, so it keeps listening as before until it restarts.");
+        }
+        return Ok(i32::from(!restarted));
+    }
     let value = match args {
         [key, value] if key == "hostname" => match value.trim() {
             "0.0.0.0" | "all" => Some("0.0.0.0"),
@@ -144,9 +198,9 @@ pub fn command(args: &[String]) -> anyhow::Result<i32> {
         _ => None,
     };
     let Some(value) = value else {
-        eprintln!("Usage: browse set hostname <127.0.0.1|0.0.0.0>");
-        eprintln!("  127.0.0.1  only browsers on this computer can connect (the default)");
-        eprintln!("  0.0.0.0    browsers on other computers can connect too, after pairing");
+        eprintln!("Usage: browse set <hostname|port> <value>");
+        eprintln!("  hostname <127.0.0.1|0.0.0.0>   this computer only (default), or other computers too");
+        eprintln!("  port <1024-65535|auto>         pin a dedicated port (for SSH tunnels), or restore auto");
         return Ok(2);
     };
     let restarted = set(value).context("couldn't save the relay's hostname")?;
@@ -155,7 +209,7 @@ pub fn command(args: &[String]) -> anyhow::Result<i32> {
         println!("! The relay is busy, so it keeps listening as before until it restarts. Run this again once no agent is using the browser.");
     }
     if value == "0.0.0.0" {
-        print_pairing(false)?;
+        print_pairing(false, None)?;
     }
     Ok(i32::from(!restarted))
 }

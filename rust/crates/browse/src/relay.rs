@@ -41,7 +41,7 @@ pub fn ensure() -> anyhow::Result<Value> {
         Probe::Running(version) if crate::legacy::is_legacy(&version) => crate::legacy::stop(&version, false)?,
         Probe::Running(version) => return Ok(version),
         // Another program's server on the default port: a relay that may choose its port takes a free fallback one.
-        Probe::Foreign(message) if browse_relay::port::pinned() => bail!(message),
+        Probe::Foreign(message) if browse_relay::port::pinned_for(&relay_api::paths()) => bail!(message),
         Probe::Foreign(_) | Probe::Absent => {}
     }
     if matches!(std::env::var("OPENCODE_BROWSER_AUTOSTART").as_deref(), Ok("0" | "false")) {
@@ -73,7 +73,7 @@ pub fn stop() -> anyhow::Result<bool> {
     let instance = version.get("instanceId").and_then(Value::as_str).unwrap_or_default().to_owned();
     let pid = version.get("pid").and_then(Value::as_u64).and_then(|pid| u32::try_from(pid).ok()).filter(|pid| *pid > 0 && *pid != std::process::id());
     let paths = relay_api::paths();
-    let configured = browse_relay::port::configured_port();
+    let configured = browse_relay::port::configured_port_for(&paths);
     // The relay removes relay.json after its final tab write and shutdown log (serve.rs). While it still names this
     // instance, the files it writes as it exits may still come, so uninstall can't delete browse's folders yet.
     let recorded = browse_relay::port::read_relay_state(&paths, configured).is_some_and(|state| state.instance_id == instance);

@@ -103,9 +103,9 @@ impl Endpoint {
 /// The running relay, proven by its /version (and relay.json when it moved to a fallback port), with this install's
 /// relay token. None when no relay answers.
 pub async fn resolve(paths: &Paths) -> Option<Endpoint> {
-    let configured = port::configured_port();
+    let configured = port::configured_port_for(paths);
     let live = port::read_relay_state(paths, configured).filter(|s| crate::util::process_alive(s.pid));
-    let port = port::env_port().or(live.as_ref().map(|s| s.port)).unwrap_or(crate::protocol::DEFAULT_PORT);
+    let port = port::env_port().or_else(|| port::config_port(paths)).or(live.as_ref().map(|s| s.port)).unwrap_or(crate::protocol::DEFAULT_PORT);
     let answer = version(port, Duration::from_secs(3)).await?;
     let instance_id = answer["instanceId"].as_str()?.to_string();
     if let Some(live) = live.filter(|s| s.port == port)

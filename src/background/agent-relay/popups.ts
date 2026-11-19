@@ -11,19 +11,22 @@ export function installPopupAdoption(deps: {
 }) {
   /** The active tab of each window and the one before it, to give a window back its tab after an agent popup. */
   const activeTabs = new Map<number, { current: number; previous?: number }>()
-  chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  const onTabActivated = ({ tabId, windowId }: chrome.tabs.OnActivatedInfo) => {
     const entry = activeTabs.get(windowId)
     if (entry?.current !== tabId) activeTabs.set(windowId, { current: tabId, ...(entry ? { previous: entry.current } : {}) })
-  })
-  chrome.windows.onRemoved.addListener((windowId) => activeTabs.delete(windowId))
+  }
+  const onWindowRemoved = (windowId: number) => activeTabs.delete(windowId)
   /** The focused window and the one focused before it, to tell whether an agent's popup took focus. */
   const focus: { current?: number; previous?: number; at: number } = { at: 0 }
-  chrome.windows.onFocusChanged.addListener((windowId) => {
+  const onFocusChanged = (windowId: number) => {
     if (windowId === chrome.windows.WINDOW_ID_NONE || windowId === focus.current) return
     focus.previous = focus.current
     focus.current = windowId
     focus.at = Date.now()
-  })
+  }
+  chrome.tabs.onActivated.addListener(onTabActivated)
+  chrome.windows.onRemoved.addListener(onWindowRemoved)
+  chrome.windows.onFocusChanged.addListener(onFocusChanged)
   void chrome.tabs.query({ active: true }).then((tabs) => {
     for (const tab of tabs) if (tab.id !== undefined && !activeTabs.has(tab.windowId)) activeTabs.set(tab.windowId, { current: tab.id })
   })
@@ -82,7 +85,8 @@ export function installPopupAdoption(deps: {
     TabCleanup.track(tabId)
   }
 
-  chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId }) => {
+  const onCreatedTarget = ({ sourceTabId, tabId }: chrome.webNavigation.WebNavigationSourceCallbackDetails) => {
+    if (!deps.relayTabs.has(sourceTabId)) return
     void adoptOpened(tabId, sourceTabId)
       .catch((error: unknown) => deps.log.add("tab.opened.error", { error: text(error) }))
       // Once it's moved and grouped: the relay attaches it as a page of the opener's session, so the agent's
@@ -91,5 +95,13 @@ export function installPopupAdoption(deps: {
         if (!deps.relayTabs.has(sourceTabId)) return
         deps.send({ method: "tabs.opened", params: { tabId, openerTabId: sourceTabId } })
       })
-  })
+  }
+  chrome.webNavigation.onCreatedNavigationTarget.addListener(onCreatedTarget)
+
+  return () => {
+    chrome.tabs.onActivated.removeListener(onTabActivated)
+    chrome.windows.onRemoved.removeListener(onWindowRemoved)
+    chrome.windows.onFocusChanged.removeListener(onFocusChanged)
+    chrome.webNavigation.onCreatedNavigationTarget.removeListener(onCreatedTarget)
+  }
 }

@@ -2,12 +2,14 @@ import { extensionCapabilityTabRelease, extensionProtocolVersion } from "../../.
 import { defaultRelayPort, isJsonObject, relayPortHint, relayPorts } from "../../agent-relay/protocol"
 import {
   BROWSER_NAME_KEY,
+  defaultLocalRelayProfile,
   RELAY_ADDRESS_KEY,
   relayAddress,
   type AgentRelayState,
   type AgentRelayStatus,
   type PairingSource,
   type ProtocolSkew,
+  type RelayProfile,
 } from "../../shared/protocol"
 import {
   ecdhKeyPair,
@@ -36,6 +38,7 @@ import {
   PORT_KEY,
   PROFILE_KEY,
   PROVEN_PORT_KEY,
+  relayStorageKey,
   SPENT_KEY,
   TOKENS_KEY,
   withTimeout,
@@ -72,6 +75,8 @@ export function createRelayHandshake(deps: {
   readonly hostPort: () => { readonly host: string; readonly port: number }
   /** The address is automatic: a pairing code may only go to the port it was given for (never a scanned one). */
   readonly automatic: () => boolean
+  readonly profile?: () => RelayProfile
+  readonly updateProfileAddress?: (address: string) => Promise<void>
   readonly status: () => AgentRelayStatus
   readonly snapshot: () => AgentRelayState
   readonly generation: () => number
@@ -79,6 +84,10 @@ export function createRelayHandshake(deps: {
   readonly resetAndConnect: (reason: string, closeReason?: string) => void
   readonly onAuthenticated: (current: WebSocket, skew: ProtocolSkew | undefined) => void
 }) {
+  const relayProfile = () => deps.profile?.() ?? defaultLocalRelayProfile()
+  const pairingKey = () => relayStorageKey(PAIRING_KEY, relayProfile().id)
+  const codePortKey = () => relayStorageKey(CODE_PORT_KEY, relayProfile().id)
+  const spentKey = () => relayStorageKey(SPENT_KEY, relayProfile().id)
   /** Sockets whose relay proved it holds this browser's token; nothing else is obeyed. */
   const trusted = new WeakSet<WebSocket>()
   /** What each socket pairs with, for its close to say what was refused. */
@@ -142,19 +151,22 @@ export function createRelayHandshake(deps: {
    * A file without a port says nothing, so it never replaces a discovered or proven port.
    */
   const pairingHint = async () => {
+    const profile = relayProfile()
+    const pKey = pairingKey()
+    const sKey = spentKey()
     const stored = await chrome.storage.local.get([
       RELAY_ADDRESS_KEY, PORT_KEY, DISCOVERED_PORT_KEY, DISCOVERED_KIND_KEY, PROVEN_PORT_KEY,
-      SPENT_KEY, PAIRING_KEY, TOKENS_KEY,
+      sKey, pKey, TOKENS_KEY,
     ])
-    const target = relayTarget(stored)
+    const target = relayTarget(stored, deps.profile ? profile : undefined)
     if (!target.automatic) return
     const file = await pairingFile()
     if (file?.code === undefined) return
     const code = file.code.code
     if (pairingHintFileCode === code) return
-    const spent = new Set(Array.isArray(stored[SPENT_KEY]) ? (stored[SPENT_KEY] as unknown[]) : [])
+    const spent = new Set(Array.isArray(stored[sKey]) ? (stored[sKey] as unknown[]) : [])
     if (spent.has(code)) return
-    if (normalizePairingCode(stored[PAIRING_KEY]) !== undefined) return
+    if (normalizePairingCode(stored[pKey]) !== undefined) return
     const tokens = isJsonObject(stored[TOKENS_KEY]) ? stored[TOKENS_KEY] : {}
     if (typeof tokens[`127.0.0.1:${target.port}`] === "string") return
     const port = file.port
@@ -183,18 +195,21 @@ export function createRelayHandshake(deps: {
     const address = `${host}:${port}`
     const local = host === "127.0.0.1"
     const automatic = deps.automatic()
-    const stored = await chrome.storage.local.get([PAIRING_KEY, TOKENS_KEY, SPENT_KEY, CODE_PORT_KEY])
-    const spent = new Set(Array.isArray(stored[SPENT_KEY]) ? (stored[SPENT_KEY] as unknown[]) : [])
+    const pKey = pairingKey()
+    const cKey = codePortKey()
+    const sKey = spentKey()
+    const stored = await chrome.storage.local.get([pKey, TOKENS_KEY, sKey, cKey])
+    const spent = new Set(Array.isArray(stored[sKey]) ? (stored[sKey] as unknown[]) : [])
     const tokens = isJsonObject(stored[TOKENS_KEY]) ? stored[TOKENS_KEY] : {}
     const own = typeof tokens[address] === "string" ? tokens[address] : undefined
     // A fallback only moves an automatic connection to a browse port; an explicit port's token is its own key only.
     const token = local && automatic ? (loopbackToken(tokens) ?? own) : own
-    const entered = normalizePairingCode(stored[PAIRING_KEY])
-    const file = local ? await pairingFile() : undefined
+    const entered = normalizePairingCode(stored[pKey])
+    const file = local && relayProfile().id === "local" ? await pairingFile() : undefined
     const usable = (code: PairingCode | undefined, here: boolean) =>
       here && code !== undefined && !spent.has(code.code) && !(code.legacy && token !== undefined)
     const next: Credential | undefined =
-      usable(entered, !automatic || port === codePort(stored[CODE_PORT_KEY])) ?
+      usable(entered, !automatic || port === codePort(stored[cKey])) ?
         { kind: "code", code: entered!, source: "entered" }
       : token !== undefined && tokenRefused !== address ? { kind: "token", token }
       : usable(file?.code, !automatic || port === (file?.port ?? defaultRelayPort)) ?
@@ -212,14 +227,16 @@ export function createRelayHandshake(deps: {
 
   /** A code that was tried is never tried again; one entered is removed (without restarting the connection). */
   const spendCode = async (code: string) => {
-    const stored = await chrome.storage.local.get([PAIRING_KEY, SPENT_KEY])
-    const spent = Array.isArray(stored[SPENT_KEY])
-      ? (stored[SPENT_KEY] as unknown[]).filter((value) => typeof value === "string")
+    const pKey = pairingKey()
+    const sKey = spentKey()
+    const stored = await chrome.storage.local.get([pKey, sKey])
+    const spent = Array.isArray(stored[sKey])
+      ? (stored[sKey] as unknown[]).filter((value) => typeof value === "string")
       : []
-    await chrome.storage.local.set({ [SPENT_KEY]: [...spent.filter((value) => value !== code), code].slice(-20) })
-    if (normalizePairingCode(stored[PAIRING_KEY])?.code === code) {
+    await chrome.storage.local.set({ [sKey]: [...spent.filter((value) => value !== code), code].slice(-20) })
+    if (normalizePairingCode(stored[pKey])?.code === code) {
       clearingCode = true
-      await chrome.storage.local.remove([PAIRING_KEY, CODE_PORT_KEY])
+      await chrome.storage.local.remove([pKey, codePortKey()])
     }
   }
 
@@ -425,18 +442,20 @@ export function createRelayHandshake(deps: {
   }
 
   const onPairingStorageChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
-    if (area !== "local" || !(PAIRING_KEY in changes || RELAY_ADDRESS_KEY in changes || BROWSER_NAME_KEY in changes))
+    const pKey = pairingKey()
+    const isLocal = relayProfile().id === "local"
+    if (area !== "local" || !(pKey in changes || (isLocal && RELAY_ADDRESS_KEY in changes) || BROWSER_NAME_KEY in changes))
       return
     if (
-      !(RELAY_ADDRESS_KEY in changes) &&
+      !(isLocal && RELAY_ADDRESS_KEY in changes) &&
       !(BROWSER_NAME_KEY in changes) &&
       clearingCode &&
-      changes[PAIRING_KEY]?.newValue === undefined
+      changes[pKey]?.newValue === undefined
     ) {
       clearingCode = false
       return
     }
-    if (PAIRING_KEY in changes && changes[PAIRING_KEY]?.newValue !== undefined) codeRejected = false
+    if (pKey in changes && changes[pKey]?.newValue !== undefined) codeRejected = false
     deps.log.add("pairing.changed")
     pairingFileRead = undefined
     deps.resetAndConnect("pairing", "Pairing changed")
@@ -450,13 +469,16 @@ export function createRelayHandshake(deps: {
     if (address === undefined) return { status: "invalid-address" }
     const code = codeInput.trim() === "" ? undefined : normalizePairingCode(codeInput)
     if (codeInput.trim() !== "" && code === undefined) return { status: "invalid-code" }
+    const pKey = pairingKey()
+    const cKey = codePortKey()
+    const sKey = spentKey()
+    const profile = relayProfile()
+    const isLocal = profile.id === "local"
     const before = await chrome.storage.local.get([
-      RELAY_ADDRESS_KEY, PAIRING_KEY, PORT_KEY, DISCOVERED_PORT_KEY, DISCOVERED_KIND_KEY, PROVEN_PORT_KEY,
+      RELAY_ADDRESS_KEY, pKey, PORT_KEY, DISCOVERED_PORT_KEY, DISCOVERED_KIND_KEY, PROVEN_PORT_KEY,
     ])
     const current = deps.hostPort()
     const automatic = deps.automatic()
-    // The port the form shows is not a typed hint when it is submitted unchanged: a code-only form sends the shown
-    // address, and treating it as a hint would pin whatever fallback the page happened to display.
     const shownPort = shownRelayPort(automatic, discoveredRelay(before), current.port)
     const typedPort = automatic && address.host === "127.0.0.1" && address.port !== undefined && relayPorts.includes(address.port)
       ? address.port
@@ -464,24 +486,28 @@ export function createRelayHandshake(deps: {
     const hinted = typedPort !== undefined && (typedPort !== shownPort || before[DISCOVERED_KIND_KEY] === "hint")
       ? typedPort
       : undefined
-    const local = address.host === "127.0.0.1" &&
+    const localAuto =
+      profile.auto &&
+      address.host === "127.0.0.1" &&
       (address.port === undefined || hinted !== undefined || (automatic && (address.port === current.port || address.port === shownPort)))
-    const value = local ? "" : address.port ? `${address.host}:${address.port}` : address.host
-    // A code typed without a port must not ride on a port only a scan found: 19988 is where an unpaired extension
-    // starts. A relay found by a scan is never given a pairing code (agent-relay/discovery.ts).
+    const value = localAuto ? "" : address.port ? `${address.host}:${address.port}` : address.host
     const scannedOnly = automatic && hinted === undefined && code !== undefined && before[DISCOVERED_KIND_KEY] !== "hint"
-    const codePort = hinted ?? (scannedOnly
+    const resolvedPort = hinted ?? (scannedOnly
       ? defaultRelayPort
-      : relayTarget({
-          [RELAY_ADDRESS_KEY]: value,
-          [PORT_KEY]: before[PORT_KEY],
-          [DISCOVERED_PORT_KEY]: before[DISCOVERED_PORT_KEY],
-        }).port)
+      : relayTarget(
+          {
+            [RELAY_ADDRESS_KEY]: value,
+            [PORT_KEY]: before[PORT_KEY],
+            [DISCOVERED_PORT_KEY]: before[DISCOVERED_PORT_KEY],
+          },
+          deps.profile ? { ...profile, address: value, auto: localAuto } : undefined,
+        ).port)
     const clearDiscovered = scannedOnly && relayPortHint(before[DISCOVERED_PORT_KEY]) !== undefined
     const beforeKind = before[DISCOVERED_KIND_KEY] === "hint" ? "hint" : "scan"
+    const currentAddress = deps.profile ? profile.address : (before[RELAY_ADDRESS_KEY] ?? "")
     const changed =
-      (before[RELAY_ADDRESS_KEY] ?? "") !== value ||
-      (code !== undefined && before[PAIRING_KEY] !== code.code) ||
+      currentAddress !== value ||
+      (code !== undefined && before[pKey] !== code.code) ||
       (hinted !== undefined && (relayPortHint(before[DISCOVERED_PORT_KEY]) !== hinted || beforeKind !== "hint")) ||
       clearDiscovered
     const outcome = new Promise<AgentRelayStatus>((resolve) => {
@@ -491,31 +517,31 @@ export function createRelayHandshake(deps: {
         if (outcomes.delete(waiter)) resolve(deps.status())
       }, CONNECT_TIMEOUT + 2_000)
     })
-    deps.log.add("relay.configure", { address: value || "this computer", code: code !== undefined })
+    deps.log.add("relay.configure", { id: profile.id, address: value || "this computer", code: code !== undefined })
     if (code !== undefined) {
-      // Typed again after it was refused: the user wants it tried.
-      const spent = (await chrome.storage.local.get(SPENT_KEY))[SPENT_KEY]
+      const spent = (await chrome.storage.local.get(sKey))[sKey]
       if (Array.isArray(spent))
-        await chrome.storage.local.set({ [SPENT_KEY]: spent.filter((entry) => entry !== code.code) })
+        await chrome.storage.local.set({ [sKey]: spent.filter((entry) => entry !== code.code) })
     }
-    // Removed before the write, so the reconnect the write triggers already dials 19988 instead of the scanned port.
     if (clearDiscovered) await chrome.storage.local.remove([DISCOVERED_PORT_KEY, DISCOVERED_KIND_KEY])
-    // One write, so storage.onChanged reconnects once.
-    if (changed)
-      await chrome.storage.local.set({
-        [RELAY_ADDRESS_KEY]: value,
+    if (changed) {
+      const updates: Record<string, unknown> = {
+        ...(isLocal && !deps.updateProfileAddress ? { [RELAY_ADDRESS_KEY]: value } : {}),
         ...(hinted !== undefined
           ? { [DISCOVERED_PORT_KEY]: hinted, [DISCOVERED_KIND_KEY]: "hint" }
           : {}),
         ...(code !== undefined
           ? {
-              [PAIRING_KEY]: code.code,
-              // The port this save dials: a later scan must never carry the code to a different relay.
-              [CODE_PORT_KEY]: codePort,
+              [pKey]: code.code,
+              [cKey]: resolvedPort,
             }
           : {}),
-      })
-    else {
+      }
+      if (Object.keys(updates).length > 0) await chrome.storage.local.set(updates)
+      if (deps.updateProfileAddress && currentAddress !== value) {
+        await deps.updateProfileAddress(value)
+      }
+    } else {
       pairingFileRead = undefined
       tokenRefused = undefined
       deps.resetAndConnect("user", "Checking the connection")
@@ -531,27 +557,25 @@ export function createRelayHandshake(deps: {
     const code = normalizePairingCode(input)
     if (code === undefined || code.legacy || deps.status() === "connected") return false
     const port = relayPortHint(hint)
-    deps.log.add("pairing.link")
-    const stored = await chrome.storage.local.get([RELAY_ADDRESS_KEY, PAIRING_KEY])
-    const saved = relayAddress(stored[RELAY_ADDRESS_KEY])
-    // A link with no browse-range port is still for this computer. Keep a saved loopback address only when it pins a
-    // port outside the relay range (OPENCODE_BROWSER_PORT=9222, say): that browser is deliberately pinned there. Every
-    // other address (remote, or an in-range loopback) is cleared so the link dials its port or 19988.
+    const pKey = pairingKey()
+    const cKey = codePortKey()
+    deps.log.add("pairing.link", { id: relayProfile().id })
+    const stored = await chrome.storage.local.get([RELAY_ADDRESS_KEY, pKey])
+    const saved = relayAddress(deps.profile ? relayProfile().address : stored[RELAY_ADDRESS_KEY])
     const keepPinned = port === undefined && saved?.host === "127.0.0.1" &&
       saved.port !== undefined && !relayPorts.includes(saved.port)
-    const address = keepPinned ? stored[RELAY_ADDRESS_KEY] as string : ""
-    // A link without a port is for 19988. Drop a port only a scan found first, so the reconnect this write triggers
-    // dials 19988 with the code instead of carrying it to whatever answered a scan.
+    const address = keepPinned ? (deps.profile ? relayProfile().address : (stored[RELAY_ADDRESS_KEY] as string)) : ""
     if (port === undefined) await chrome.storage.local.remove([DISCOVERED_PORT_KEY, DISCOVERED_KIND_KEY])
     await chrome.storage.local.set({
-      [RELAY_ADDRESS_KEY]: address,
-      [PAIRING_KEY]: code.code,
-      // The port this code is for: never a later scan's, nor whatever port is in use when the code is tried.
-      [CODE_PORT_KEY]: port ?? defaultRelayPort,
+      ...(deps.updateProfileAddress ? {} : { [RELAY_ADDRESS_KEY]: address }),
+      [pKey]: code.code,
+      [cKey]: port ?? defaultRelayPort,
       ...(port !== undefined ? { [DISCOVERED_PORT_KEY]: port, [DISCOVERED_KIND_KEY]: "hint" } : {}),
     })
-    // The write reconnects through storage.onChanged; only an unchanged address and code need the explicit nudge.
-    if ((stored[RELAY_ADDRESS_KEY] ?? "") === address && stored[PAIRING_KEY] === code.code)
+    if (deps.updateProfileAddress && relayProfile().address !== address) {
+      await deps.updateProfileAddress(address)
+    }
+    if ((deps.profile ? relayProfile().address : (stored[RELAY_ADDRESS_KEY] ?? "")) === address && stored[pKey] === code.code)
       deps.resetAndConnect("pairing", "Pairing changed")
     return true
   }

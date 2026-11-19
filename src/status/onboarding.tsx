@@ -29,8 +29,11 @@ import "./onboarding.css"
 const link = pairingLink(location.hash)
 let fragmentCode = link?.code
 const fragmentPort = link?.port
-const installTab = !!fragmentCode
-if (link !== undefined || /^#(code|ticket|pair)=/.test(location.hash))
+const fragmentAddress = link?.address
+const fragmentLabel = link?.label
+const fragmentAdd = !!link?.add
+const installTab = !!fragmentCode && !fragmentAdd
+if (link !== undefined || /^#(code|ticket|pair|add)=/.test(location.hash))
   history.replaceState(null, "", location.pathname + location.search)
 
 const settingsUrl = () => chrome.runtime.getURL("settings.html")
@@ -47,7 +50,7 @@ function Onboarding() {
   const [tried, setTried] = createSignal(false)
   const [pairedBy, setPairedBy] = createSignal<"link" | "code">()
   const [linkNote, setLinkNote] = createSignal<string>()
-  const [where, setWhere] = createSignal<Where>()
+  const [where, setWhere] = createSignal<Where | undefined>(fragmentAdd ? "remote" : undefined)
   const [how, setHow] = createSignal<How>("agent")
   const [pickedMethod, setPickedMethod] = createSignal(installMethod.id)
   const [pickedRemoteMethod, setPickedRemoteMethod] = createSignal(remoteInstallMethod.id)
@@ -55,6 +58,7 @@ function Onboarding() {
   const step = createMemo(() => firstRunStep(relay.state(), installWaiting() ? "install-waiting" : probe()))
   const list = createMemo(() => checklist({ state: relay.state(), wasConnected: wasConnected(), tried: tried() }))
   const connected = () => list().agent === "done"
+  const remoteConnected = () => (relay.state()?.relays ?? []).some((r) => !r.auto && r.enabled && r.status === "connected")
   const method = createMemo(() => installMethods.find((option) => option.id === pickedMethod()) ?? installMethod)
   const remoteMethod = createMemo(() => remoteInstallMethods.find((option) => option.id === pickedRemoteMethod()) ?? remoteInstallMethod)
   // Until the user picks, it follows where the extension already points.
@@ -72,7 +76,16 @@ function Onboarding() {
     // The code from install's URL, used once, and only when this extension isn't paired with the relay (no token, or
     // one the relay refused). A working pairing is never replaced; the page says it ignored the link instead. While
     // it's still connecting (or the relay is starting), wait for a status that tells.
-    if (fragmentCode && state.status !== "offline" && state.status !== "connecting") {
+    if (fragmentCode && fragmentAddress) {
+      relay.send({
+        type: "pairing.link",
+        code: fragmentCode,
+        ...(fragmentPort !== undefined ? { port: fragmentPort } : {}),
+        address: fragmentAddress,
+        ...(fragmentLabel !== undefined ? { label: fragmentLabel } : {}),
+      })
+      fragmentCode = undefined
+    } else if (fragmentCode && state.status !== "offline" && state.status !== "connecting") {
       if (state.status === "unpaired" || state.status === "untrusted")
         relay.send({
           type: "pairing.link",
@@ -86,8 +99,10 @@ function Onboarding() {
   })
   relay.onMessage((message) => {
     if (message?.type !== "pairing.link.result") return
-    if (message.ok) setPairedBy("link")
-    else setLinkNote("Already paired with the relay; the pairing link from install was ignored.")
+    if (message.ok) {
+      setPairedBy("link")
+      if (fragmentAdd) setLinkNote(`Added & paired ${fragmentLabel ?? fragmentAddress}.`)
+    } else setLinkNote("Already paired with the relay; the pairing link from install was ignored.")
   })
 
   /**
@@ -265,12 +280,21 @@ function Onboarding() {
               </Step>
               <Step
                 number={2}
-                title="Enter its address and code"
-                done={connected()}
-                description={connected() ? <AgentDone relay={relay} pairedBy={pairedBy()} /> : "The code works once, within 10 minutes."}
+                title="Add and pair its relay"
+                done={remoteConnected()}
+                description={
+                  remoteConnected() ? (
+                    <AgentDone relay={relay} pairedBy={pairedBy()} />
+                  ) : (
+                    "Keeps your local Mac relay connected too. The code works once, within 10 minutes."
+                  )
+                }
               >
-                <Show when={!connected()}>
-                  <RelayForm relay={relay} remote />
+                <Show when={linkNote()}>
+                  {(note) => <Note tone="ok">{note()}</Note>}
+                </Show>
+                <Show when={!remoteConnected() || fragmentAdd}>
+                  <RelayForm relay={relay} mode="add" remote help />
                 </Show>
               </Step>
               {tryIt(3)}

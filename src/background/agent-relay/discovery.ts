@@ -3,7 +3,7 @@
 // pairs; without that hint, a failed connection scans the candidates' open /version for a browse relay.
 import { defaultRelayPort, isJsonObject, relayPortHint, relayPorts } from "../../agent-relay/protocol"
 import { probeRelayPort } from "../../agent-relay/probe"
-import { RELAY_ADDRESS_KEY, relayAddress } from "../../shared/protocol"
+import { RELAY_ADDRESS_KEY, relayAddress, type RelayProfile } from "../../shared/protocol"
 import { DISCOVERED_KIND_KEY, DISCOVERED_PORT_KEY, PORT_KEY, PROVEN_PORT_KEY, TOKENS_KEY, type AgentRelayLog } from "./wire"
 
 /** Where the next connection dials. */
@@ -19,8 +19,12 @@ export type RelayTarget = {
  * are explicit and dialled exactly as given. Everything else is automatic: the port a pairing hint or a scan found,
  * else 19988.
  */
-export function relayTarget(stored: Record<string, unknown>): RelayTarget {
-  const address = relayAddress(stored[RELAY_ADDRESS_KEY]) ?? { host: "127.0.0.1" }
+export function relayTarget(stored: Record<string, unknown>, profile?: RelayProfile): RelayTarget {
+  if (profile && !profile.auto) {
+    const parsed = relayAddress(profile.address) ?? { host: "127.0.0.1" }
+    return { host: parsed.host, port: parsed.port ?? defaultRelayPort, automatic: false }
+  }
+  const address = (profile ? relayAddress(profile.address) : relayAddress(stored[RELAY_ADDRESS_KEY])) ?? { host: "127.0.0.1" }
   const override = Number(stored[PORT_KEY]) || undefined
   if (address.port !== undefined || address.host !== "127.0.0.1" || override !== undefined)
     return { host: address.host, port: address.port ?? override ?? defaultRelayPort, automatic: false }

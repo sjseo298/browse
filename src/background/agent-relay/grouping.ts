@@ -4,9 +4,10 @@ import { serialQueue } from "../serial"
 import { TabCleanup } from "../tab-cleanup"
 import {
   autoNamed,
-  GROUP_COLOR,
   groupTitle,
   ownedGroup,
+  relayGroupColor,
+  relayStorageKey,
   SESSION_GROUPS_KEY,
   sharedGroup,
   sharedTitle,
@@ -18,7 +19,14 @@ export function createRelayGrouping(deps: {
   readonly relayTabs: Set<number>
   readonly currentSocket: () => WebSocket | undefined
   readonly isReloading: () => boolean
+  readonly relayId?: string
+  readonly relayLabel?: string
+  readonly isKnownRelayTab?: (tabId: number) => boolean
 }) {
+  const relayId = deps.relayId ?? "local"
+  const groupPrefix = relayId === "local" ? undefined : deps.relayLabel?.trim() || relayId
+  const groupColor = relayGroupColor(relayId)
+  const sessionGroupsKey = relayStorageKey(SESSION_GROUPS_KEY, relayId)
   /**
    * Each agent session's tab group, so a session keeps one group while its display name changes. Stored, so a service
    * worker restart doesn't put a session's next tab in a second group. Group ids don't survive a browser restart.
@@ -29,9 +37,9 @@ export function createRelayGrouping(deps: {
 
   const restoreSessionGroups = () =>
     (sessionGroupsRestored ??= chrome.storage.local
-      .get(SESSION_GROUPS_KEY)
+      .get(sessionGroupsKey)
       .then((stored) => {
-        const saved = stored[SESSION_GROUPS_KEY]
+        const saved = stored[sessionGroupsKey]
         if (!isJsonObject(saved)) return
         for (const [key, groupId] of Object.entries(saved))
           if (typeof groupId === "number" && !sessionGroups.has(key)) sessionGroups.set(key, groupId)
@@ -41,7 +49,7 @@ export function createRelayGrouping(deps: {
   const setSessionGroup = (key: string, groupId: number) => {
     if (sessionGroups.get(key) === groupId) return
     sessionGroups.set(key, groupId)
-    void chrome.storage.local.set({ [SESSION_GROUPS_KEY]: Object.fromEntries(sessionGroups) }).catch(() => undefined)
+    void chrome.storage.local.set({ [sessionGroupsKey]: Object.fromEntries(sessionGroups) }).catch(() => undefined)
   }
 
   const serially = serialQueue()
@@ -52,10 +60,10 @@ export function createRelayGrouping(deps: {
   /** Keeps a shared group's title counting its tabs. */
   const countShared = async (groupId: number) => {
     const item = await chrome.tabGroups.get(groupId).catch(() => undefined)
-    if (!item || !sharedGroup(item.title)) return
+    if (!item || !sharedGroup(item.title, groupPrefix ?? "")) return
     const count = (await chrome.tabs.query({ groupId }).catch(() => [])).length
-    if (count && item.title !== sharedTitle(count))
-      await chrome.tabGroups.update(groupId, { title: sharedTitle(count) }).catch(() => undefined)
+    if (count && item.title !== sharedTitle(count, groupPrefix))
+      await chrome.tabGroups.update(groupId, { title: sharedTitle(count, groupPrefix) }).catch(() => undefined)
   }
 
   /** Recounts every shared group soon: tabs closed, moved, or left or joined a group. */
@@ -65,7 +73,7 @@ export function createRelayGrouping(deps: {
       void chrome.tabGroups
         .query({})
         .then(async (groups) => {
-          for (const item of groups) if (sharedGroup(item.title)) await countShared(item.id)
+          for (const item of groups) if (sharedGroup(item.title, groupPrefix ?? "")) await countShared(item.id)
         })
         .catch(() => undefined)
     }, 100)
@@ -78,7 +86,7 @@ export function createRelayGrouping(deps: {
   const groupShared = async (tabId: number, current: WebSocket) => {
     const tab = await chrome.tabs.get(tabId)
     const target = (await chrome.tabGroups.query({ windowId: tab.windowId })).find(
-      (item) => item.windowId === tab.windowId && sharedGroup(item.title),
+      (item) => item.windowId === tab.windowId && sharedGroup(item.title, groupPrefix ?? ""),
     )
     let groupId = target?.id
     if (groupId !== undefined) {
@@ -90,7 +98,7 @@ export function createRelayGrouping(deps: {
         await undoGroup(tabId)
         throw new Error("The relay reconnected while grouping the tab")
       }
-      await chrome.tabGroups.update(groupId, { title: sharedTitle(1), color: GROUP_COLOR })
+      await chrome.tabGroups.update(groupId, { title: sharedTitle(1, groupPrefix), color: groupColor })
     }
     await countShared(groupId)
     await AgentGroups.adopt(groupId)
@@ -116,7 +124,7 @@ export function createRelayGrouping(deps: {
     }
     if (mode === "none") return chrome.tabGroups.TAB_GROUP_ID_NONE
     if (mode === "shared") return serially(() => groupShared(tabId, current))
-    const title = groupTitle(sessionId, tab.url)
+    const title = groupTitle(sessionId, tab.url, groupPrefix)
     const key = sessionId ?? ""
     await restoreSessionGroups()
     const known = sessionGroups.get(key)
@@ -129,7 +137,7 @@ export function createRelayGrouping(deps: {
     }
     if (target && target.windowId === tab.windowId && ownedGroup(target.title)) {
       if (tab.groupId !== target.id) await chrome.tabs.group({ tabIds: [tabId], groupId: target.id })
-      if (target.title !== title) await chrome.tabGroups.update(target.id, { title, color: GROUP_COLOR })
+      if (target.title !== title) await chrome.tabGroups.update(target.id, { title, color: groupColor })
       await AgentGroups.adopt(target.id)
       return target.id
     }
@@ -140,7 +148,7 @@ export function createRelayGrouping(deps: {
       await undoGroup(tabId)
       throw new Error("The relay reconnected while grouping the tab")
     }
-    await chrome.tabGroups.update(groupId, { title, color: GROUP_COLOR })
+    await chrome.tabGroups.update(groupId, { title, color: groupColor })
     setSessionGroup(key, groupId)
     await AgentGroups.adopt(groupId)
     return groupId
@@ -154,7 +162,7 @@ export function createRelayGrouping(deps: {
     const sessionId = Array.from(sessionGroups).find(([, id]) => id === tab.groupId)?.[0]
     if (sessionId === undefined || !autoNamed(sessionId)) return
     const current = await chrome.tabGroups.get(tab.groupId).catch(() => undefined)
-    const title = groupTitle(sessionId, url)
+    const title = groupTitle(sessionId, url, groupPrefix)
     if (current && ownedGroup(current.title) && current.title !== title)
       await chrome.tabGroups.update(current.id, { title }).catch(() => undefined)
   }
@@ -192,7 +200,7 @@ export function createRelayGrouping(deps: {
     const groups = (await chrome.tabGroups.query({})).filter((item) => ownedGroup(item.title))
     for (const item of groups)
       for (const tab of await chrome.tabs.query({ groupId: item.id }))
-        if (tab.id !== undefined && !deps.relayTabs.has(tab.id) && !(await TabCleanup.isTracked(tab.id)))
+        if (tab.id !== undefined && !(deps.isKnownRelayTab?.(tab.id) ?? deps.relayTabs.has(tab.id)) && !(await TabCleanup.isTracked(tab.id)))
           await chrome.tabs.ungroup(tab.id).catch(() => undefined)
   }
 
@@ -203,13 +211,13 @@ export function createRelayGrouping(deps: {
         .map(([key]) => key)
       if (!keys.length) return
       keys.forEach((key) => sessionGroups.delete(key))
-      void chrome.storage.local.set({ [SESSION_GROUPS_KEY]: Object.fromEntries(sessionGroups) }).catch(() => undefined)
+      void chrome.storage.local.set({ [sessionGroupsKey]: Object.fromEntries(sessionGroups) }).catch(() => undefined)
     })
   }
 
   const onBrowserStartup = () => {
     sessionGroups.clear()
-    void chrome.storage.local.remove(SESSION_GROUPS_KEY)
+    void chrome.storage.local.remove(sessionGroupsKey)
   }
 
   return {

@@ -133,18 +133,20 @@ prints a one-time code (`XXXX-XXXX`, good for 10 minutes) and waits. Open **Exte
 **advanced** (or click **Pair with a code**), enter the code under **Pairing code** and click **Connect**. `browse pair
 --list` shows paired browsers; `browse pair --revoke <browser>` unpairs one.
 
-### Browser on another computer
+### Browser on another computer (simultaneous multi-relay & SSH devcontainers)
 
-When your agent runs on one machine and your browser on another (over Tailscale, say), browse runs next to the agent
-and the extension connects to it across the network:
+The fork extension supports **simultaneous connections** to both your local OpenCode relay (`127.0.0.1:19988`) and
+remote relays (e.g. an SSH-tunneled devcontainer on a dedicated port like `29980`):
 
-1. On the agent's machine run `browse install --remote` (or `browse set hostname 0.0.0.0` after installing). browse
-   then listens on every network, restarting the relay if it runs, and prints this machine's address and a pairing
-   code. Other computers reach only the extension link; the HTTP API answers on `127.0.0.1` only.
-2. In the browser, open browse's setup page, choose **Connect an agent on another computer** and enter the address and
-   code (or use **Relay address** and **Pairing code** under **advanced** on the options page).
+1. On the remote host/devcontainer, install and pin a matching port (HMAC pairing binds the port):
+   `curl -fsSL https://sjseo298.github.io/browse/install | bash -s -- --remote --port 29980 --label OIPA`
+   (or `browse set hostname 0.0.0.0` + `browse set port 29980`).
+2. Forward the same port over SSH (`ssh -L 127.0.0.1:29980:<container-ip>:29980 ...`).
+3. Open the 1-click `chrome-extension://.../onboarding.html#add=127.0.0.1:29980&code=...&label=OIPA` link in Google
+   Chrome (or add it under **Relays** / **advanced** on the extension options page). Both relays stay connected at the
+   same time with separate tab groups and colors.
 
-The connection isn't encrypted by browse; use a network that is (Tailscale or WireGuard), not the open internet.
+The connection isn't encrypted by browse; use an SSH tunnel or a private network (Tailscale or WireGuard), not the open internet.
 `browse set hostname 127.0.0.1` goes back to this computer only.
 
 ### Updates

@@ -11,6 +11,7 @@ import {
   type PageStatus,
 } from "../agent-relay/protocol"
 import {
+  defaultLocalRelayProfile,
   HUMAN_INPUT_KEY,
   humanInput,
   RELAY_ADDRESS_KEY,
@@ -20,6 +21,7 @@ import {
   type AutoUpdateMode,
   type RelayAutoUpdate,
   type RelayOverrides,
+  type RelayProfile,
   type RelaySettings,
 } from "../shared/protocol"
 import { createAgentRelayLog, formatAgentRelayLog } from "./agent-relay/log"
@@ -36,6 +38,7 @@ import {
   CONNECT_TIMEOUT,
   KEEPALIVE,
   PORT_KEY,
+  relayStorageKey,
   retryDelay,
   serialize,
   STABLE_AFTER,
@@ -62,8 +65,21 @@ type PendingClick = { tabId: number; lending: boolean }
 const pendingClick = (value: unknown): value is PendingClick =>
   isJsonObject(value) && typeof value.tabId === "number" && typeof value.lending === "boolean"
 
-export function createAgentRelay(input: { changed: (state: AgentRelayState) => void; badgesChanged: () => void }) {
+export function createAgentRelay(input: {
+  changed: (state: AgentRelayState) => void
+  badgesChanged: () => void
+  profile?: RelayProfile
+  isKnownRelayTab?: (tabId: number) => boolean
+  tabConflict?: (tabId: number) => string | undefined
+  onTabOwned?: (tabId: number) => void
+  onTabReleased?: (tabId: number) => void
+  updateProfileAddress?: (address: string) => Promise<void>
+  managedLifecycle?: boolean
+}) {
   const log = createAgentRelayLog()
+  let currentProfile = input.profile ?? defaultLocalRelayProfile()
+  const pendingStorageKey = relayStorageKey(PENDING_KEY, currentProfile.id)
+  let disposed = false
   let socket: WebSocket | undefined
   let starting: Promise<void> | undefined
   let generation = 0
@@ -71,7 +87,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   let host = "127.0.0.1"
   let port = defaultRelayPort
   /** No address set and no dev pin: the relay may move to a fallback port, and a failed connection may scan for it. */
-  let automatic = true
+  let automatic = currentProfile.auto
   /** How the current automatic port was learned, and whether a connection on it ever authenticated. */
   let discovered = defaultDiscovered
   let attempts = 0
@@ -92,9 +108,9 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   const savePending = () => {
     pendingWrites = pendingWrites
       .then(() => {
-        if (!pendingAttach.size) return chrome.storage.session.remove(PENDING_KEY)
+        if (!pendingAttach.size) return chrome.storage.session.remove(pendingStorageKey)
         const list = Array.from(pendingAttach, ([tabId, lending]) => ({ tabId, lending }))
-        return chrome.storage.session.set({ [PENDING_KEY]: list })
+        return chrome.storage.session.set({ [pendingStorageKey]: list })
       })
       .catch(() => undefined)
   }
@@ -127,8 +143,8 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   /** The queue a previous worker left. attachTab and the flush wait for it, so neither acts on half a queue. */
   const restored = (async () => {
     const closing = (closedWhileRestoring = new Set<number>())
-    const stored = (await chrome.storage.session.get(PENDING_KEY).catch(() => ({}))) as Record<string, unknown>
-    const list = Array.isArray(stored[PENDING_KEY]) ? stored[PENDING_KEY].filter(pendingClick) : []
+    const stored = (await chrome.storage.session.get(pendingStorageKey).catch(() => ({}))) as Record<string, unknown>
+    const list = Array.isArray(stored[pendingStorageKey]) ? stored[pendingStorageKey].filter(pendingClick) : []
     let dropped = 0
     for (const { tabId, lending } of list) {
       const tab = await chrome.tabs.get(tabId).catch(() => undefined)
@@ -229,7 +245,11 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     pageStatuses.delete(tabId)
     void HandoffNotice.clear(tabId)
     void ToolbarNotice.clear(tabId)
-    if (known) notify()
+    if (known) {
+      input.onTabReleased?.(tabId)
+      notify()
+    }
+    return known
   }
 
   /** Sends the clicks that waited for the relay; one made meanwhile waits for the next connection. */
@@ -392,6 +412,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   })
 
   const connect = (reason: string) => {
+    if (disposed) return Promise.resolve()
     starting ??= start(reason).finally(() => {
       starting = undefined
     })
@@ -401,6 +422,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   /** Capped exponential backoff with jitter; the alarm keeps trying while the worker sleeps. A socket that never opened
    * costs nothing to retry, so that backoff stays short; one that opened then failed keeps the longer cap. */
   const schedule = (quiet = false, opened = true) => {
+    if (disposed) return
     clearTimeout(retry)
     const delay = retryDelay(attempts, opened)
     attempts = Math.min(attempts + 1, 16)
@@ -412,6 +434,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   }
 
   const start = async (reason: string) => {
+    if (disposed) return
     if (socket && socket.readyState <= WebSocket.OPEN) return
     clearTimeout(retry)
     retry = undefined
@@ -419,7 +442,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     await handshake.pairingHint()
     const stored = await chrome.storage.local.get([PORT_KEY, RELAY_ADDRESS_KEY, ...discoveredKeys])
     // An address the user set (or the PORT_KEY dev pin), else this one: 19988, or the port a hint or scan found.
-    const target = relayTarget(stored)
+    const target = relayTarget(stored, input.profile ? currentProfile : undefined)
     const previous = `${host}:${port}`
     host = target.host
     port = target.port
@@ -535,8 +558,8 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     }
   }
 
-  // Listeners live as long as the worker, not a connection, so reconnects never add more.
-  chrome.debugger.onEvent.addListener((source, method, params) => {
+  // Listeners live as long as the relay instance (removed on destroy()), so reconnects never add more.
+  const onDebuggerEvent = (source: chrome.debugger.DebuggerSession, method: string, params?: object) => {
     if (source.tabId === undefined || !relayTabs.has(source.tabId)) return
     send({
       method: "debugger.event",
@@ -547,8 +570,8 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
         ...(source.sessionId === undefined ? {} : { sessionId: source.sessionId }),
       },
     })
-  })
-  chrome.debugger.onDetach.addListener((source, reason) => {
+  }
+  const onDebuggerDetach = (source: chrome.debugger.Debuggee, reason: string) => {
     const tabId = source.tabId
     if (reloading || tabId === undefined || !relayTabs.has(tabId)) return
     const sessionId = (source as chrome.debugger.DebuggerSession).sessionId
@@ -567,16 +590,13 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     }
     forget(tabId)
     send({ method: "debugger.detached", params: { tabId, reason } })
-  })
-  chrome.tabs.onUpdated.addListener((tabId, change) => {
+  }
+  const onTabUpdated = (tabId: number, change: chrome.tabs.OnUpdatedInfo) => {
     if (change.url && relayTabs.has(tabId)) void grouping.renameForPage(tabId, change.url)
     if (change.groupId !== undefined) grouping.recountShared()
-  })
-  chrome.tabs.onAttached.addListener(() => grouping.recountShared())
-  chrome.tabGroups.onRemoved.addListener(grouping.onGroupRemoved)
-  // Group ids don't survive a browser restart.
-  chrome.runtime.onStartup.addListener(grouping.onBrowserStartup)
-  chrome.tabs.onDetached.addListener(() => grouping.recountShared())
+  }
+  const onTabAttached = () => grouping.recountShared()
+  const onTabDetached = () => grouping.recountShared()
   // Never close a tab while its agent runs a script on it, waits for the user there, or records it.
   TabCleanup.guard((tabId) => {
     const state = pageStatuses.get(tabId)?.state
@@ -586,46 +606,54 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   const tabRemoved = (tabId: number) => {
     canceledAgentTabs.delete(tabId)
     closedWhileRestoring?.add(tabId)
-    if (relayTabs.has(tabId)) log.add("tab.removed", { tabId })
+    const had = relayTabs.has(tabId)
+    if (had) log.add("tab.removed", { tabId })
     forget(tabId)
     cancelPending(tabId)
     if (badges.delete(tabId)) input.badgesChanged()
-    send({ method: "tabs.removed", params: { tabId } })
+    if (had) send({ method: "tabs.removed", params: { tabId } })
     grouping.recountShared()
   }
-  chrome.tabs.onRemoved.addListener((tabId) => tabRemoved(tabId))
-  // A tab Chrome swaps for another (a discard, a prerender) gets a new id and no onRemoved for the old one, which
-  // the relay would otherwise keep as a target that answers "No tab with given id".
-  chrome.tabs.onReplaced.addListener((_addedTabId, removedTabId) => tabRemoved(removedTabId))
-  chrome.alarms.onAlarm.addListener((alarm) => {
-    // A suspended worker restarts with no pending timer, so this only helps a live worker skip a backoff timer still
-    // waiting. connect() reuses a socket that's still connecting or open, so this can't stack connections.
+  const onTabRemoved = (tabId: number) => tabRemoved(tabId)
+  const onTabReplaced = (_addedTabId: number, removedTabId: number) => tabRemoved(removedTabId)
+  const onAlarm = (alarm: chrome.alarms.Alarm) => {
     if (alarm.name === ALARM) void connect("alarm")
-  })
-  chrome.storage.onChanged.addListener((changes, area) => {
+  }
+  const onHumanInputChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
     if (area === "local" && HUMAN_INPUT_KEY in changes) void sendSettings()
-  })
-  // A code entered on the status page, a new relay address or a new name takes effect on a fresh connection.
+  }
+
+  chrome.debugger.onEvent.addListener(onDebuggerEvent)
+  chrome.debugger.onDetach.addListener(onDebuggerDetach)
+  chrome.tabs.onUpdated.addListener(onTabUpdated)
+  chrome.tabs.onAttached.addListener(onTabAttached)
+  chrome.tabGroups.onRemoved.addListener(grouping.onGroupRemoved)
+  chrome.runtime.onStartup.addListener(grouping.onBrowserStartup)
+  chrome.tabs.onDetached.addListener(onTabDetached)
+  chrome.tabs.onRemoved.addListener(onTabRemoved)
+  chrome.tabs.onReplaced.addListener(onTabReplaced)
+  if (!input.managedLifecycle) chrome.alarms.onAlarm.addListener(onAlarm)
+  chrome.storage.onChanged.addListener(onHumanInputChanged)
   chrome.storage.onChanged.addListener(handshake.onPairingStorageChanged)
-  installPopupAdoption({
+  const disposePopups = installPopupAdoption({
     log,
     relayTabs,
     send,
     countShared: grouping.countShared,
   })
-  void chrome.alarms.create(ALARM, { periodInMinutes: extensionReconnectAlarmPeriodMs / 60_000 })
-  void DebuggerHub.restore()
-    .then(async () => {
-      DebuggerHub.attachedTabs().forEach((tabId) => relayTabs.add(tabId))
-      // Tabs the previous worker was opening for an agent when it stopped (never tracked, or tracked but never
-      // attached): the relay doesn't know them, so nothing would use them again. Close them.
-      const orphans = [
-        ...(await TabCleanup.reconcileCreates((tabId) => relayTabs.has(tabId)).catch(() => [])),
-        ...(await TabCleanup.closeUnattached((tabId) => relayTabs.has(tabId)).catch(() => [])),
-      ]
-      log.add("worker.start", { restoredTabs: relayTabs.size, ...(orphans.length ? { closedOrphans: orphans.length } : {}) })
-    })
-    .then(() => connect("startup"))
+  if (!input.managedLifecycle) {
+    void chrome.alarms.create(ALARM, { periodInMinutes: extensionReconnectAlarmPeriodMs / 60_000 })
+    void DebuggerHub.restore()
+      .then(async () => {
+        DebuggerHub.attachedTabs().forEach((tabId) => relayTabs.add(tabId))
+        const orphans = [
+          ...(await TabCleanup.reconcileCreates((tabId) => relayTabs.has(tabId)).catch(() => [])),
+          ...(await TabCleanup.closeUnattached((tabId) => relayTabs.has(tabId)).catch(() => [])),
+        ]
+        log.add("worker.start", { restoredTabs: relayTabs.size, ...(orphans.length ? { closedOrphans: orphans.length } : {}) })
+      })
+      .then(() => connect("startup"))
+  }
 
   return {
     state: snapshot,
@@ -698,11 +726,12 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
         return false
       }
       if (message.action === "handoff.complete") {
-        if (typeof tabId === "number" && typeof message.handoffId === "string") {
+        if (typeof tabId === "number" && relayTabs.has(tabId) && typeof message.handoffId === "string") {
           log.add("handoff.completed", { tabId, from: "page" })
           send({ method: "handoff.completed", params: { tabId, handoffId: message.handoffId } })
+          return false
         }
-        return false
+        return undefined
       }
       return undefined
     },
@@ -725,6 +754,57 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     pairLink: handshake.pairLink,
     /** Reconnects now, for example after the user fixed what blocked the connection. */
     reconnect: handshake.reconnect,
+    id: () => currentProfile.id,
+    profile: () => currentProfile,
+    setProfile(next: RelayProfile) {
+      const addressChanged = next.address !== currentProfile.address || next.auto !== currentProfile.auto
+      currentProfile = next
+      if (addressChanged) {
+        automatic = next.auto
+        resetAndConnect("profile", "Relay address updated")
+      } else {
+        notify()
+      }
+    },
+    ownsTab: (tabId: number) => relayTabs.has(tabId) || pendingAttach.has(tabId),
+    restoreOwnedTabs(tabIds: readonly number[]) {
+      for (const tabId of tabIds) relayTabs.add(tabId)
+      void connect("startup")
+    },
+    triggerAlarm: () => {
+      void connect("alarm")
+    },
+    async destroy(options: { detachTabs?: boolean } = {}) {
+      disposed = true
+      clearTimeout(retry)
+      retry = undefined
+      clearInterval(keepalive)
+      keepalive = undefined
+      socket?.close(1000, "Relay removed")
+      socket = undefined
+      chrome.debugger.onEvent.removeListener(onDebuggerEvent)
+      chrome.debugger.onDetach.removeListener(onDebuggerDetach)
+      chrome.tabs.onUpdated.removeListener(onTabUpdated)
+      chrome.tabs.onAttached.removeListener(onTabAttached)
+      chrome.tabGroups.onRemoved.removeListener(grouping.onGroupRemoved)
+      chrome.runtime.onStartup.removeListener(grouping.onBrowserStartup)
+      chrome.tabs.onDetached.removeListener(onTabDetached)
+      chrome.tabs.onRemoved.removeListener(onTabRemoved)
+      chrome.tabs.onReplaced.removeListener(onTabReplaced)
+      if (!input.managedLifecycle) chrome.alarms.onAlarm.removeListener(onAlarm)
+      chrome.storage.onChanged.removeListener(onHumanInputChanged)
+      chrome.storage.onChanged.removeListener(handshake.onPairingStorageChanged)
+      disposePopups()
+      if (options.detachTabs) {
+        for (const tabId of Array.from(relayTabs)) {
+          forget(tabId)
+          await DebuggerHub.detach(tabId).catch(() => undefined)
+        }
+      }
+      pendingAttach.clear()
+      savePending()
+      input.badgesChanged()
+    },
     /** A plain-text report for bug reports: versions, connection state, tabs, and the recent log. */
     async diagnostics() {
       const entries = await log.entries()

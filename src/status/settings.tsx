@@ -3,7 +3,7 @@
 // human-like input and handoff notifications, updates), then an Advanced section for the relay's address and pairing
 // code, reconnect and diagnostics. Each row is a chrome.storage.local key the background reads when it needs it (or
 // sends to the relay, for input); a setting the relay's environment fixes is shown as such.
-import { createSignal, Show, type JSX } from "solid-js"
+import { createSignal, For, Show, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 import { Button } from "@opencode/ui/button"
 import { Icon } from "@opencode/ui/icon"
@@ -17,6 +17,7 @@ import {
   AGENT_GROUP_COLLAPSE_KEY,
   AGENT_WINDOW_KEY,
   BROWSER_NAME_KEY,
+  DEFAULT_LOCAL_RELAY_ID,
   HANDOFF_NOTIFICATIONS_KEY,
   HUMAN_INPUT_KEY,
   IDLE_MINUTES_KEY,
@@ -33,6 +34,7 @@ import {
   type AgentRelayState,
   type AgentWindowPlacement,
   type AutoUpdateMode,
+  type RelayEntryState,
   type RelayOverrides,
 } from "../shared/protocol"
 import { unpackedExtensionId } from "../../cli/src/protocol"
@@ -81,6 +83,10 @@ function Settings() {
       .sendMessage({ action: AGENT_DIAGNOSTICS })
       .then((response: { text?: string } | undefined) => navigator.clipboard.writeText(response?.text ?? "No diagnostics."))
       .then(() => showToast({ title: "Diagnostics copied", description: "Paste them into a bug report.", variant: "success" }))
+
+  const relays = () => state()?.relays ?? []
+  const enabledRelays = () => relays().filter((r) => r.enabled)
+  const [editingRelay, setEditingRelay] = createSignal<string>()
 
   return (
     <main class="settings">
@@ -262,11 +268,92 @@ function Settings() {
           )}
         </Show>
 
+        <Section title="relays">
+          <div class="relay-list">
+            <For each={relays()}>
+              {(entry: RelayEntryState) => (
+                <div class="relay-item" data-state={entry.enabled ? entry.status : "offline"}>
+                  <div class="relay-item-head">
+                    <span class="dot" aria-hidden="true" />
+                    <div class="relay-item-info">
+                      <span class="relay-item-label">{entry.label}</span>
+                      <span class="relay-item-meta">
+                        <code>{entry.relay.address}</code> · {entry.enabled ? entry.status : "disabled"}
+                        {entry.tabs.length ? ` · ${entry.tabs.length} tab${entry.tabs.length === 1 ? "" : "s"}` : ""}
+                      </span>
+                    </div>
+                    <div class="relay-item-actions">
+                      <Show when={entry.enabled}>
+                        <Button
+                          variant="neutral"
+                          size="small"
+                          onClick={() => relay.send({ type: "agents.reconnect", id: entry.id })}
+                        >
+                          Reconnect
+                        </Button>
+                        <Button
+                          variant="neutral"
+                          size="small"
+                          onClick={() => setEditingRelay((prev) => (prev === entry.id ? undefined : entry.id))}
+                        >
+                          {editingRelay() === entry.id ? "Close" : "Pair"}
+                        </Button>
+                      </Show>
+                      <Switch
+                        hideLabel
+                        checked={entry.enabled}
+                        onChange={(on) => relay.send({ type: "relay.toggle", id: entry.id, enabled: on })}
+                      >
+                        Enable {entry.label}
+                      </Switch>
+                      <Show when={entry.id !== DEFAULT_LOCAL_RELAY_ID}>
+                        <Button
+                          variant="neutral"
+                          size="small"
+                          onClick={() => relay.send({ type: "relay.remove", id: entry.id })}
+                        >
+                          Remove
+                        </Button>
+                      </Show>
+                    </div>
+                  </div>
+                  <Show when={editingRelay() === entry.id && entry.enabled}>
+                    <div class="relay-item-edit">
+                      <RelayForm
+                        relay={relay}
+                        relayId={entry.id}
+                        remote={entry.relay.remote}
+                        onDone={() => setEditingRelay(undefined)}
+                      />
+                    </div>
+                  </Show>
+                </div>
+              )}
+            </For>
+          </div>
+          <Show when={enabledRelays().length > 1}>
+            <Row
+              label="Toolbar-lent tabs go to"
+              description="Which connected OpenCode receives a tab when you click the browse icon on it."
+            >
+              <SegmentedControl
+                class="seg-lend"
+                value={state()?.lendTarget ?? enabledRelays()[0]?.id ?? DEFAULT_LOCAL_RELAY_ID}
+                onChange={(value) => value && relay.send({ type: "relay.setLendTarget", id: value })}
+              >
+                <For each={enabledRelays()}>
+                  {(entry) => <SegmentedControlItem value={entry.id}>{entry.label}</SegmentedControlItem>}
+                </For>
+              </SegmentedControl>
+            </Row>
+          </Show>
+        </Section>
+
         <div class="hr" />
         <details class="advanced" ref={advanced}>
           <summary class="advanced-summary">
             <span class="advanced-title">advanced</span>
-            <span class="advanced-hint">relay address, pairing code, diagnostics</span>
+            <span class="advanced-hint">add remote / SSH relay, diagnostics</span>
             <Icon class="advanced-chevron" name="chevron-down" size="small" />
           </summary>
           <div class="advanced-body">
@@ -280,7 +367,7 @@ function Settings() {
                 </p>
               )}
             </Show>
-            <RelayForm relay={relay} />
+            <RelayForm relay={relay} mode="add" help />
             <p class="row-desc">
               <Rich text="The relay runs on this computer unless your agent runs on another one: run `browse set hostname 0.0.0.0` there, then enter that computer's Tailscale IP or name. A pairing code is only needed for a new relay, or after this browser was unpaired: run `browse pair` on the relay's computer. It works once, within 10 minutes." />
             </p>
@@ -352,6 +439,10 @@ function Row(props: { label: string; description?: string; children: JSX.Element
 /** The connection in a few words, for the top of the card; Advanced has the long version. */
 function statusText(state: AgentRelayState | undefined) {
   if (state === undefined) return "Connecting to the relay…"
+  const connectedRelays = state.relays?.filter((r) => r.enabled && r.status === "connected") ?? []
+  if (connectedRelays.length > 1) {
+    return `Connected to ${connectedRelays.length} relays (${connectedRelays.map((r) => r.label).join(", ")})`
+  }
   const remote = state.relay.remote ? state.relay.address : undefined
   switch (state.status) {
     case "connected":

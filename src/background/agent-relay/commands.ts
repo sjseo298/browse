@@ -78,6 +78,8 @@ export function createRelayCommands(deps: {
   readonly ungroup: (tabId: number, options?: { finished?: boolean; released?: boolean }) => Promise<void>
   /** True for the first `tabs.ungroup` after a debugging-bar cancel of a tab an agent opened: it must stay as it is. */
   readonly consumeCanceledUngroup: (tabId: number) => boolean
+  readonly tabConflict?: (tabId: number) => string | undefined
+  readonly onTabOwned?: (tabId: number) => void
 }) {
   /** Each tab's page status deliveries, in order (see deliverPageStatus). */
   const pageDeliveries = new Map<number, Promise<void>>()
@@ -124,6 +126,8 @@ export function createRelayCommands(deps: {
         return {}
       case "debugger.attach": {
         const tabId = number(params, "tabId")
+        const owner = deps.tabConflict?.(tabId)
+        if (owner) throw new Error(`Tab ${tabId} is currently in use by relay "${owner}".`)
         TabCleanup.touch(tabId)
         // A click's attach comes back here; a failure is told to the user instead of only returned to the relay.
         const clicked = ToolbarNotice.take(tabId)
@@ -135,6 +139,7 @@ export function createRelayCommands(deps: {
         }
         if (clicked) void ToolbarNotice.clear(tabId)
         deps.relayTabs.add(tabId)
+        deps.onTabOwned?.(tabId)
         deps.notify()
         return {}
       }

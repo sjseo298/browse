@@ -114,6 +114,10 @@ fn mcp_cwd() -> String {
 /// Writes (or updates) the browse MCP server so it runs `entry`, keeping settings the user added. One pooled server
 /// with a fixed cwd serves every OpenCode session; each agent works in the tabs it opens, by their ids.
 pub fn configure_opencode(file: &Path, entry: &Path) -> anyhow::Result<McpEdit> {
+    configure_opencode_with_port(file, entry, None)
+}
+
+pub fn configure_opencode_with_port(file: &Path, entry: &Path, port: Option<u16>) -> anyhow::Result<McpEdit> {
     let (mut text, servers) = mcp_servers(file)?;
     let existing = servers.get(MCP_NAME);
     if existing.is_some_and(|s| !owned(s, entry)) {
@@ -130,6 +134,9 @@ pub fn configure_opencode(file: &Path, entry: &Path) -> anyhow::Result<McpEdit> 
     server["pool"] = json!(true);
     server["environment"] = environment;
     server["environment"]["OPENCODE_BROWSER_RUNTIME"] = json!("auto-update");
+    if let Some(port) = port {
+        server["environment"]["OPENCODE_BROWSER_PORT"] = json!(port.to_string());
+    }
     if existing == Some(&server) {
         return Ok(McpEdit::UpToDate);
     }
@@ -418,11 +425,20 @@ pub fn pair(args: &[String]) -> anyhow::Result<i32> {
         _ => {}
     }
     let seconds = flag(args, "--wait-seconds").map(|s| s.parse::<u64>()).transpose().context("--wait-seconds must be a number")?.unwrap_or(180).min(600);
+    let label = flag(args, "--label");
+    let no_wait = args.iter().any(|a| a == "--no-wait");
+    let show_add = args.iter().any(|a| a == "--add" || a == "--remote") || label.is_some() || relay_api::port() != relay_api::DEFAULT_PORT;
     relay::ensure()?;
     let receipt = format!("{:016x}", session::random_u64());
     let code = mint_code(&receipt)?;
     println!("Pairing code: {}", pairing::format_pairing_code(&code));
+    if show_add {
+        println!("Extension add link: {}", crate::remote::add_relay_link(relay_api::port(), &code, label));
+    }
     println!("{} It works once, within 10 minutes.", manual_pair(&code));
+    if no_wait {
+        return Ok(0);
+    }
     println!("Waiting up to {seconds}s for that browser. Later, `browse pair --list` shows paired browsers.");
     let deadline = Instant::now() + Duration::from_secs(seconds);
     while Instant::now() < deadline {
@@ -630,6 +646,18 @@ mod tests {
         assert!(cwd != "~" && Path::new(cwd).is_absolute(), "the stale ~ is rewritten to the home directory: {cwd}");
         assert_eq!(cwd, home().display().to_string());
         assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse")).unwrap(), McpEdit::UpToDate));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn opencode_gets_pinned_port_when_requested() {
+        let dir = scratch("pinned-port");
+        let file = dir.join("opencode.json");
+        assert!(matches!(configure_opencode_with_port(&file, Path::new("/usr/bin/browse"), Some(29980)).unwrap(), McpEdit::Added));
+        let config = jsonc::parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(config["mcp"]["servers"]["browse"]["environment"]["OPENCODE_BROWSER_PORT"], "29980");
+        let link = crate::remote::add_relay_link(29980, "ABCD1234", Some("OIPA Dev"));
+        assert!(link.starts_with("chrome-extension://afeafocngkodbmaipcngoamamfmekgfo/onboarding.html#add=127.0.0.1:29980&code=ABCD-1234&label=OIPA%20Dev"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

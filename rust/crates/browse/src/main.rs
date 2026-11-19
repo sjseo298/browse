@@ -31,17 +31,20 @@ SETUP
                               all, 'none' to print the MCP entry instead)
     -y, --yes                 Set up every agent found on this computer without asking
     --remote                  The browser is on another computer: open the relay to the network and print its
-                              address and a pairing code
+                              address, 1-click Chrome add link and a pairing code
+    --port <port>             Pin a dedicated relay port (e.g. 29980 for SSH tunnels) in opencode.json & relay config
+    --label <name>            Display label for this relay in the extension (e.g. OIPA)
     --no-open                 Print the steps without opening anything
     --no-wait                 Don't wait for the extension to connect
     --wait-seconds <seconds>  How long to wait (default 180 in a terminal, 90 otherwise)
     --no-modify-path          Don't add browse to PATH
   extension                   Where to get the extension
   pair [--wait-seconds <s>]   Print a one-time pairing code and wait for the browser that redeems it
+    --label <name>            Include a relay label in the printed 1-click Chrome add link
+    --no-wait                 Print the pairing code / link and exit immediately
     --list                    Show paired browsers
     --revoke <browser>        Unpair a browser (its id, name or profile)
-  set hostname <127.0.0.1|0.0.0.0>
-                              Who can reach the relay: this computer only (default), or other computers too
+  set <hostname|port> <val>   Configure relay bind hostname (127.0.0.1|0.0.0.0) or dedicated port (1024-65535|auto)
   update [--check]            Update now, or only check
     --mode <on|notify|off>    Automatic updates (OPENCODE_BROWSER_AUTO_UPDATE overrides)
   status [--json]             Setup, relay and extension state

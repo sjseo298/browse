@@ -32,6 +32,8 @@ struct Flags {
     wait_seconds: Option<u64>,
     no_modify_path: bool,
     remote: bool,
+    port: Option<u16>,
+    label: Option<String>,
     opencode: Option<PathBuf>,
 }
 
@@ -74,6 +76,11 @@ fn parse(args: &[String]) -> anyhow::Result<Flags> {
             "--no-wait" => flags.no_wait = true,
             "--no-modify-path" => flags.no_modify_path = true,
             "--remote" => flags.remote = true,
+            "--port" => {
+                let port = value(arg)?.parse::<u16>().ok().filter(|p| *p >= 1024).context("--port must be between 1024 and 65535")?;
+                flags.port = Some(port);
+            }
+            "--label" => flags.label = Some(value(arg)?),
             "--wait-seconds" => {
                 let seconds = value(arg)?.parse::<u64>().ok().filter(|s| (1..=3600).contains(s)).context("--wait-seconds must be between 1 and 3600")?;
                 flags.wait_seconds = Some(seconds);
@@ -314,6 +321,10 @@ pub fn install(args: &[String]) -> anyhow::Result<i32> {
     }
     let entry = place(&flags)?;
     let command = vec![entry.to_string_lossy().into_owned(), "mcp".to_owned()];
+    if let Some(port) = flags.port {
+        let _ = remote::set_port(Some(port))?;
+        println!("✓ Configured relay port {port}");
+    }
     restart_outdated_relay();
 
     let opencode = flags.opencode.clone().or_else(|| std::env::var_os("OPENCODE_BIN").map(PathBuf::from)).or_else(|| browsers::on_path("opencode"));
@@ -350,7 +361,7 @@ pub fn install(args: &[String]) -> anyhow::Result<i32> {
         let label = agents::label(location.name);
         let file = tilde(&location.file);
         if location.name == "opencode" {
-            match setup::configure_opencode(&location.file, &entry) {
+            match setup::configure_opencode_with_port(&location.file, &entry, flags.port) {
                 Ok(McpEdit::Added) => println!("✓ Added browse to {label} ({file})"),
                 Ok(McpEdit::Updated) => println!("✓ Updated browse in {label} ({file})"),
                 Ok(McpEdit::UpToDate) => println!("✓ {label} already has browse"),
@@ -416,7 +427,7 @@ pub fn install(args: &[String]) -> anyhow::Result<i32> {
         println!("Agent: browse's tools appear in {} once it reloads its MCP servers; if they don't show up, ask the user to restart {}.", agents::label(caller), agents::label(caller));
     }
     if flags.remote {
-        return Ok(status.max(remote::install(agent)?));
+        return Ok(status.max(remote::install(agent, flags.label.as_deref())?));
     }
     let seconds = flags.wait_seconds.unwrap_or(if tty { 180 } else { 90 });
     let connected = setup::connect_extension(!flags.no_open, !flags.no_wait, Duration::from_secs(seconds))?;

@@ -3,13 +3,13 @@
 // onboarding page (onboarding.html) walks through setup; the settings page (settings.html, the options page) shows the
 // connection.
 import { AGENT_DIAGNOSTICS, STATUS_PORT, type FromStatusPage, type ToStatusPage } from "../shared/protocol"
-import { createAgentRelay } from "./agent-relay"
+import { createRelayPool } from "./relay-pool"
 import { TabCleanup } from "./tab-cleanup"
 
 // Neutral by default; amber while an agent runs, blue while it waits for the user.
 const BADGE_COLORS: Record<string, string> = { default: "#3b3b3b", RUN: "#b45309", WAIT: "#2563eb" }
 const pages = new Set<chrome.runtime.Port>()
-const agents = createAgentRelay({
+const agents = createRelayPool({
   changed: (state) => broadcast({ type: "agents", state }),
   badgesChanged: () => void updateBadges(),
 })
@@ -42,13 +42,24 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onDisconnect.addListener(() => pages.delete(port))
   port.onMessage.addListener((message: FromStatusPage) => {
     if (typeof message !== "object" || message === null) return
-    if (message.type === "agents.reconnect") agents.reconnect()
+    if (message.type === "agents.reconnect") agents.reconnect(message.id)
     if (message.type === "tabs.cleanup") void TabCleanup.cleanup({ minutes: 0 })
-    if (message.type === "autoUpdate.set") agents.setAutoUpdate(message.mode)
+    if (message.type === "autoUpdate.set") agents.setAutoUpdate(message.mode, message.id)
     if (message.type === "pairing.link")
-      void agents.pairLink(message.code, message.port).then((ok) => post(port, { type: "pairing.link.result", ok }))
+      void agents
+        .pairLink(message.code, message.port, message.address, message.label)
+        .then((ok) => post(port, { type: "pairing.link.result", ok }))
     if (message.type === "relay.connect")
-      void agents.connectTo(message.address, message.code).then((result) => post(port, { type: "relay.result", ...result }))
+      void agents
+        .connectTo(message.address, message.code, message.id, message.label)
+        .then((result) => post(port, { type: "relay.result", ...result }))
+    if (message.type === "relay.add")
+      void agents
+        .addRelay({ label: message.label, address: message.address, code: message.code })
+        .then((result) => post(port, { type: "relay.result", ...result }))
+    if (message.type === "relay.remove") void agents.removeRelay(message.id)
+    if (message.type === "relay.toggle") void agents.toggleRelay(message.id, message.enabled)
+    if (message.type === "relay.setLendTarget") void agents.setLendTarget(message.id)
   })
   post(port, { type: "agents", state: agents.state() })
 })

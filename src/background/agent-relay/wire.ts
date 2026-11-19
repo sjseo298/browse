@@ -52,7 +52,21 @@ export const ALARM = "opencode-browser-relay"
 // "One shared group for all agents" setting) ends with it twice.
 export const GROUP_MARKER = "\u2063"
 export const SHARED_MARKER = GROUP_MARKER + GROUP_MARKER
-export const GROUP_COLOR = "grey"
+export const GROUP_COLOR: `${chrome.tabGroups.Color}` = "grey"
+const RELAY_COLORS: readonly `${chrome.tabGroups.Color}`[] = ["blue", "cyan", "purple", "green", "pink", "orange", "yellow"]
+
+/** Scopes a chrome.storage key per relay profile while keeping `"local"` unchanged for backwards compatibility. */
+export function relayStorageKey(base: string, relayId: string) {
+  return relayId === "local" ? base : `${base}:${relayId}`
+}
+
+/** Deterministic Chrome tab-group color for a relay profile (`local` stays grey). */
+export function relayGroupColor(relayId: string): `${chrome.tabGroups.Color}` {
+  if (relayId === "local") return GROUP_COLOR
+  let hash = 0
+  for (let i = 0; i < relayId.length; i++) hash = (hash * 31 + relayId.charCodeAt(i)) >>> 0
+  return RELAY_COLORS[hash % RELAY_COLORS.length]!
+}
 export const MAX_RECORDING_BUFFER = 16 * 1024 * 1024
 /** The largest message the relay accepts, in bytes (256 MiB, as Playwright's CDP client); kept a little under. */
 export const MAX_MESSAGE = 255 * 1024 * 1024
@@ -138,10 +152,11 @@ export function autoNamed(sessionId: string | undefined) {
  * The tab group's name: the session's name when an agent chose one ("github"), else "Agent · <site>" for the
  * page it is on, else "Agent". The trailing marker identifies the relay's groups.
  */
-export function groupTitle(sessionId: string | undefined, url?: string) {
+export function groupTitle(sessionId: string | undefined, url?: string, relayPrefix?: string) {
   const host = url && /^https?:/.test(url) ? new URL(url).hostname.replace(/^www\./, "") : undefined
   // Never ending in the marker itself, which would read as the shared group.
-  const name = autoNamed(sessionId) ? (host ? `Agent · ${host}` : "Agent") : sessionId!.trim().replace(/\u2063+$/, "")
+  const base = autoNamed(sessionId) ? (host ? `Agent · ${host}` : "Agent") : sessionId!.trim().replace(/\u2063+$/, "")
+  const name = relayPrefix ? `${relayPrefix} · ${base}` : base
   return `${name.length > 28 ? `${name.slice(0, 27)}…` : name}${GROUP_MARKER}`
 }
 
@@ -149,13 +164,16 @@ export function ownedGroup(title: string | undefined) {
   return !!title?.endsWith(GROUP_MARKER)
 }
 
-/** The shared group's title: "Agents · 3", for every agent's tabs in its window. */
-export function sharedTitle(count: number) {
-  return `Agents · ${count}${SHARED_MARKER}`
+/** The shared group's title: "Agents · 3" (or "<Relay> · 3" for secondary relays). */
+export function sharedTitle(count: number, relayPrefix?: string) {
+  return `${relayPrefix || "Agents"} · ${count}${SHARED_MARKER}`
 }
 
-export function sharedGroup(title: string | undefined) {
-  return !!title?.endsWith(SHARED_MARKER)
+export function sharedGroup(title: string | undefined, relayPrefix?: string) {
+  if (!title?.endsWith(SHARED_MARKER)) return false
+  if (relayPrefix === undefined) return true
+  const base = title.slice(0, -SHARED_MARKER.length)
+  return relayPrefix ? base.startsWith(`${relayPrefix} · `) : base.startsWith("Agents · ")
 }
 
 export function sleep(ms: number) {
