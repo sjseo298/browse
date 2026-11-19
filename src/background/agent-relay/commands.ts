@@ -79,6 +79,7 @@ export function createRelayCommands(deps: {
   /** True for the first `tabs.ungroup` after a debugging-bar cancel of a tab an agent opened: it must stay as it is. */
   readonly consumeCanceledUngroup: (tabId: number) => boolean
   readonly tabConflict?: (tabId: number) => string | undefined
+  readonly canDetachTab?: (tabId: number) => boolean
   readonly onTabOwned?: (tabId: number) => void
 }) {
   /** Each tab's page status deliveries, in order (see deliverPageStatus). */
@@ -146,10 +147,12 @@ export function createRelayCommands(deps: {
       case "debugger.detach": {
         const tabId = number(params, "tabId")
         deps.forget(tabId)
-        await DebuggerHub.detach(tabId)
-        // A released agent tab stays as it is: grouped and tracked, so the idle-cleanup setting (never, or a
-        // number of minutes) decides when it closes. Any other detach finishes with the tab.
-        if (params?.release !== true) await deps.ungroup(tabId, { finished: true })
+        if (deps.canDetachTab?.(tabId) ?? true) {
+          await DebuggerHub.detach(tabId)
+          // A released agent tab stays as it is: grouped and tracked, so the idle-cleanup setting (never, or a
+          // number of minutes) decides when it closes. Any other detach finishes with the tab.
+          if (params?.release !== true) await deps.ungroup(tabId, { finished: true })
+        }
         return {}
       }
       case "debugger.sendCommand":
@@ -211,6 +214,7 @@ export function createRelayCommands(deps: {
         const tabId = number(params, "tabId")
         // An older relay follows every debugging-bar cancel with this; a tab an agent opened stays grouped and tracked.
         if (deps.consumeCanceledUngroup(tabId)) return {}
+        if (!(deps.canDetachTab?.(tabId) ?? true)) return {}
         await deps.ungroup(tabId)
         return {}
       }

@@ -2,15 +2,21 @@
 // toolbar button lets agents use the current tab, or stops them (before setup, it opens the onboarding page). The
 // onboarding page (onboarding.html) walks through setup; the settings page (settings.html, the options page) shows the
 // connection.
-import { AGENT_DIAGNOSTICS, STATUS_PORT, type FromStatusPage, type ToStatusPage } from "../shared/protocol"
+import { AGENT_DIAGNOSTICS, LEND_TARGET_ALL, STATUS_PORT, type AgentRelayState, type FromStatusPage, type ToStatusPage } from "../shared/protocol"
 import { createRelayPool } from "./relay-pool"
+import { serialQueue } from "./serial"
 import { TabCleanup } from "./tab-cleanup"
 
 // Neutral by default; amber while an agent runs, blue while it waits for the user.
 const BADGE_COLORS: Record<string, string> = { default: "#3b3b3b", RUN: "#b45309", WAIT: "#2563eb" }
 const pages = new Set<chrome.runtime.Port>()
+const menuQueue = serialQueue()
+let lastMenuSignature = ""
 const agents = createRelayPool({
-  changed: (state) => broadcast({ type: "agents", state }),
+  changed: (state) => {
+    broadcast({ type: "agents", state })
+    void syncContextMenus(state)
+  },
   badgesChanged: () => void updateBadges(),
 })
 
@@ -114,6 +120,51 @@ async function updateBadges(tabs?: chrome.tabs.Tab[]) {
         .catch(() => undefined)
     }),
   )
+}
+
+const CONTEXT_MENU_PREFIX = "browse-lend:"
+
+function syncContextMenus(state: AgentRelayState) {
+  if (typeof chrome.contextMenus?.create !== "function") return
+  const enabled = (state.relays ?? []).filter((r) => r.enabled).map((r) => ({ id: r.id, label: r.label }))
+  const sig = enabled.map((r) => `${r.id}:${r.label}`).join("|")
+  if (sig === lastMenuSignature) return
+  lastMenuSignature = sig
+  return menuQueue(
+    () =>
+      new Promise<void>((resolve) => {
+        chrome.contextMenus.removeAll(() => {
+          void chrome.runtime.lastError
+          const contexts: [`${chrome.contextMenus.ContextType}`, ...`${chrome.contextMenus.ContextType}`[]] = ["action", "page"]
+          if (enabled.length > 1) {
+            chrome.contextMenus.create({
+              id: `${CONTEXT_MENU_PREFIX}${LEND_TARGET_ALL}`,
+              title: "Lend tab to All relays",
+              contexts,
+            })
+          }
+          for (const relay of enabled) {
+            chrome.contextMenus.create({
+              id: `${CONTEXT_MENU_PREFIX}${relay.id}`,
+              title: `Lend tab to ${relay.label}`,
+              contexts,
+            })
+          }
+          resolve()
+        })
+      }),
+  ).catch(() => undefined)
+}
+
+if (typeof chrome.contextMenus?.onClicked?.addListener === "function") {
+  chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (tab?.id === undefined || typeof info.menuItemId !== "string" || !info.menuItemId.startsWith(CONTEXT_MENU_PREFIX))
+      return
+    const targetId = info.menuItemId.slice(CONTEXT_MENU_PREFIX.length)
+    const { status } = agents.state()
+    if (status === "unpaired" || status === "untrusted" || status === "incompatible") return void openOnboarding()
+    void agents.attachTab(tab.id, targetId)
+  })
 }
 
 function broadcast(message: ToStatusPage) {

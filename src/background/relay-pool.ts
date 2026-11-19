@@ -5,6 +5,7 @@ import {
   aggregateRelayState,
   DEFAULT_LOCAL_RELAY_ID,
   defaultLocalRelayProfile,
+  LEND_TARGET_ALL,
   LEND_TARGET_KEY,
   RELAY_ADDRESS_KEY,
   RELAY_PROFILES_KEY,
@@ -21,6 +22,7 @@ import { DebuggerHub } from "./debugger-hub"
 import { TabCleanup } from "./tab-cleanup"
 
 const TAB_OWNERS_KEY = "agentRelayTabOwners"
+const SHARED_TABS_KEY = "agentRelaySharedTabs"
 const PENDING_KEY = "agentRelayPendingClicks"
 
 type RelayInstance = ReturnType<typeof createAgentRelay>
@@ -32,12 +34,20 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
   let lendTarget: string = DEFAULT_LOCAL_RELAY_ID
   const instances = new Map<string, RelayInstance>()
   const states = new Map<string, AgentRelayState>()
-  const tabOwners = new Map<number, string>()
+  const tabOwners = new Map<number, Set<string>>()
+  const sharedTabs = new Set<number>()
   let ownersWrite: Promise<unknown> = Promise.resolve()
 
   const persistTabOwners = () => {
-    const obj = Object.fromEntries(Array.from(tabOwners, ([tabId, id]) => [String(tabId), id]))
-    ownersWrite = ownersWrite.then(() => chrome.storage.local.set({ [TAB_OWNERS_KEY]: obj })).catch(() => undefined)
+    const obj = Object.fromEntries(
+      Array.from(tabOwners)
+        .filter(([, ids]) => ids.size > 0)
+        .map(([tabId, ids]) => [String(tabId), Array.from(ids)]),
+    )
+    const shared = Array.from(sharedTabs)
+    ownersWrite = ownersWrite
+      .then(() => chrome.storage.local.set({ [TAB_OWNERS_KEY]: obj, [SHARED_TABS_KEY]: shared }))
+      .catch(() => undefined)
   }
 
   const persistProfiles = async (next: RelayProfile[]) => {
@@ -47,7 +57,7 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
 
   const snapshot = (): AgentRelayState => {
     const effectiveLend =
-      profiles.some((p) => p.id === lendTarget && p.enabled)
+      lendTarget === LEND_TARGET_ALL || profiles.some((p) => p.id === lendTarget && p.enabled)
         ? lendTarget
         : (profiles.find((p) => p.enabled)?.id ?? DEFAULT_LOCAL_RELAY_ID)
     return aggregateRelayState(profiles, states, effectiveLend)
@@ -62,12 +72,14 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
     return false
   }
 
-  const findOwner = (tabId: number): RelayInstance | undefined => {
-    for (const inst of instances.values()) {
-      if (inst.ownsTab(tabId)) return inst
-    }
-    const storedOwner = tabOwners.get(tabId)
-    return storedOwner ? instances.get(storedOwner) : undefined
+  const findOwners = (tabId: number): RelayInstance[] => {
+    const live = Array.from(instances.values()).filter((inst) => inst.ownsTab(tabId))
+    if (live.length > 0) return live
+    const stored = tabOwners.get(tabId)
+    if (!stored) return []
+    return Array.from(stored)
+      .map((id) => instances.get(id))
+      .filter((inst): inst is RelayInstance => inst !== undefined)
   }
 
   const spawnRelay = (profile: RelayProfile) => {
@@ -81,19 +93,38 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
       managedLifecycle: true,
       isKnownRelayTab,
       tabConflict: (tabId) => {
+        if (sharedTabs.has(tabId)) return undefined
         for (const [otherId, other] of instances) {
           if (otherId !== profile.id && other.ownsTab(tabId)) return other.profile().label
         }
         return undefined
       },
+      canDetachTab: (tabId) => {
+        for (const [otherId, other] of instances) {
+          if (otherId !== profile.id && other.ownsTab(tabId)) return false
+        }
+        return true
+      },
       onTabOwned: (tabId) => {
-        tabOwners.set(tabId, profile.id)
+        const set = tabOwners.get(tabId) ?? new Set<string>()
+        set.add(profile.id)
+        tabOwners.set(tabId, set)
         persistTabOwners()
       },
       onTabReleased: (tabId) => {
-        if (tabOwners.get(tabId) === profile.id) {
-          tabOwners.delete(tabId)
+        const set = tabOwners.get(tabId)
+        if (set?.delete(profile.id)) {
+          if (set.size === 0) {
+            tabOwners.delete(tabId)
+            sharedTabs.delete(tabId)
+          }
           persistTabOwners()
+        } else if (sharedTabs.has(tabId)) {
+          const stillOwned = Array.from(instances.values()).some((other) => other !== inst && other.ownsTab(tabId))
+          if (!stillOwned) {
+            sharedTabs.delete(tabId)
+            persistTabOwners()
+          }
         }
       },
       updateProfileAddress: async (address) => {
@@ -144,23 +175,52 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
     return preferred ?? instances.get(DEFAULT_LOCAL_RELAY_ID) ?? instances.values().next().value
   }
 
+  const pickLendRelays = (explicitId?: string): RelayInstance[] => {
+    if (explicitId === LEND_TARGET_ALL || (!explicitId && lendTarget === LEND_TARGET_ALL)) {
+      const connected = Array.from(instances.values()).filter((inst) => inst.state().status === "connected")
+      return connected.length > 0 ? connected : Array.from(instances.values())
+    }
+    const single = pickLendRelay(explicitId)
+    return single ? [single] : []
+  }
+
   const ready = (async () => {
-    const stored = await chrome.storage.local.get([RELAY_PROFILES_KEY, RELAY_ADDRESS_KEY, LEND_TARGET_KEY, TAB_OWNERS_KEY])
+    const stored = await chrome.storage.local.get([
+      RELAY_PROFILES_KEY,
+      RELAY_ADDRESS_KEY,
+      LEND_TARGET_KEY,
+      TAB_OWNERS_KEY,
+      SHARED_TABS_KEY,
+    ])
     profiles = resolveRelayProfiles(stored)
     if (!Array.isArray(stored[RELAY_PROFILES_KEY])) {
       await chrome.storage.local.set({ [RELAY_PROFILES_KEY]: profiles })
     }
-    if (typeof stored[LEND_TARGET_KEY] === "string" && profiles.some((p) => p.id === stored[LEND_TARGET_KEY])) {
+    if (
+      typeof stored[LEND_TARGET_KEY] === "string" &&
+      (stored[LEND_TARGET_KEY] === LEND_TARGET_ALL || profiles.some((p) => p.id === stored[LEND_TARGET_KEY]))
+    ) {
       lendTarget = stored[LEND_TARGET_KEY]
     } else if (profiles.some((p) => p.id === DEFAULT_LOCAL_RELAY_ID && p.enabled)) {
       lendTarget = DEFAULT_LOCAL_RELAY_ID
     } else {
       lendTarget = profiles.find((p) => p.enabled)?.id ?? profiles[0]?.id ?? DEFAULT_LOCAL_RELAY_ID
     }
+    if (Array.isArray(stored[SHARED_TABS_KEY])) {
+      for (const id of stored[SHARED_TABS_KEY]) {
+        if (typeof id === "number" && Number.isInteger(id)) sharedTabs.add(id)
+      }
+    }
     if (isJsonObject(stored[TAB_OWNERS_KEY])) {
       for (const [k, v] of Object.entries(stored[TAB_OWNERS_KEY])) {
         const tabId = Number(k)
-        if (Number.isInteger(tabId) && typeof v === "string") tabOwners.set(tabId, v)
+        if (!Number.isInteger(tabId)) continue
+        if (typeof v === "string") {
+          tabOwners.set(tabId, new Set([v]))
+        } else if (Array.isArray(v)) {
+          const ids = v.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+          if (ids.length > 0) tabOwners.set(tabId, new Set(ids))
+        }
       }
     }
 
@@ -172,18 +232,27 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
     const attached = DebuggerHub.attachedTabs()
     const byRelay = new Map<string, number[]>()
     for (const tabId of attached) {
-      const ownerId = tabOwners.get(tabId)
-      const targetId = ownerId && instances.has(ownerId) ? ownerId : (instances.has(DEFAULT_LOCAL_RELAY_ID) ? DEFAULT_LOCAL_RELAY_ID : profiles.find((p) => p.enabled)?.id)
-      if (!targetId) continue
-      tabOwners.set(tabId, targetId)
-      const list = byRelay.get(targetId) ?? []
-      list.push(tabId)
-      byRelay.set(targetId, list)
+      const saved = tabOwners.get(tabId)
+      const activeIds = saved ? Array.from(saved).filter((id) => instances.has(id)) : []
+      const fallbackId = instances.has(DEFAULT_LOCAL_RELAY_ID)
+        ? DEFAULT_LOCAL_RELAY_ID
+        : profiles.find((p) => p.enabled)?.id
+      const targetIds = activeIds.length > 0 ? activeIds : fallbackId ? [fallbackId] : []
+      if (targetIds.length === 0) continue
+      tabOwners.set(tabId, new Set(targetIds))
+      for (const targetId of targetIds) {
+        const list = byRelay.get(targetId) ?? []
+        list.push(tabId)
+        byRelay.set(targetId, list)
+      }
     }
     // Prune dead tab owners no longer attached after restore.
     const attachedSet = new Set(attached)
     for (const tabId of Array.from(tabOwners.keys())) {
       if (!attachedSet.has(tabId)) tabOwners.delete(tabId)
+    }
+    for (const tabId of Array.from(sharedTabs)) {
+      if (!attachedSet.has(tabId)) sharedTabs.delete(tabId)
     }
     persistTabOwners()
 
@@ -207,26 +276,69 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
   return {
     state: snapshot,
     badge: (tabId: number): AgentBadge | undefined => {
+      let fallback: AgentBadge | undefined
       for (const inst of instances.values()) {
         const b = inst.badge(tabId)
-        if (b !== undefined) return b
+        if (b === undefined) continue
+        if (b.text === "WAIT" || b.text === "RUN") return b
+        fallback ??= b
       }
-      return undefined
+      return fallback
     },
     async attachTab(tabId: number, targetRelayId?: string) {
       await ready
-      const existingOwner = findOwner(tabId)
-      if (existingOwner) return existingOwner.attachTab(tabId)
-      const target = pickLendRelay(targetRelayId)
-      if (!target) return
-      return target.attachTab(tabId)
+      const currentOwners = Array.from(instances.values()).filter((inst) => inst.ownsTab(tabId))
+      if (currentOwners.length > 0) {
+        if (targetRelayId === undefined) {
+          await Promise.all(currentOwners.map((inst) => inst.attachTab(tabId)))
+          return
+        }
+        if (targetRelayId === LEND_TARGET_ALL) {
+          const allTargets = pickLendRelays(LEND_TARGET_ALL)
+          const missing = allTargets.filter((inst) => !inst.ownsTab(tabId))
+          if (missing.length > 0) {
+            sharedTabs.add(tabId)
+            persistTabOwners()
+            await Promise.all(missing.map((inst) => inst.attachTab(tabId)))
+          } else {
+            await Promise.all(currentOwners.map((inst) => inst.attachTab(tabId)))
+          }
+          return
+        }
+        const explicit = instances.get(targetRelayId)
+        if (!explicit) return
+        if (explicit.ownsTab(tabId)) {
+          await explicit.attachTab(tabId)
+        } else {
+          sharedTabs.add(tabId)
+          persistTabOwners()
+          await explicit.attachTab(tabId)
+        }
+        return
+      }
+      const targets = pickLendRelays(targetRelayId)
+      if (targets.length === 0) return
+      if (targets.length > 1 || targetRelayId === LEND_TARGET_ALL || (!targetRelayId && lendTarget === LEND_TARGET_ALL)) {
+        sharedTabs.add(tabId)
+      } else {
+        sharedTabs.delete(tabId)
+      }
+      persistTabOwners()
+      await Promise.all(targets.map((inst) => inst.attachTab(tabId)))
     },
     runtimeMessage(message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response: unknown) => void) {
       if (!isJsonObject(message)) return undefined
       const tabId = sender.tab?.id
       if (typeof tabId === "number") {
-        const owner = findOwner(tabId)
-        if (owner) return owner.runtimeMessage(message, sender, sendResponse)
+        const owners = findOwners(tabId)
+        if (owners.length > 0) {
+          let handled: boolean | undefined
+          for (const owner of owners) {
+            const res = owner.runtimeMessage(message, sender, sendResponse)
+            if (res !== undefined) handled = res
+          }
+          if (handled !== undefined) return handled
+        }
       }
       for (const inst of instances.values()) {
         const res = inst.runtimeMessage(message, sender, sendResponse)
@@ -328,7 +440,7 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
     },
     async setLendTarget(id: string) {
       await ready
-      if (!profiles.some((p) => p.id === id)) return false
+      if (id !== LEND_TARGET_ALL && !profiles.some((p) => p.id === id)) return false
       lendTarget = id
       await chrome.storage.local.set({ [LEND_TARGET_KEY]: id })
       broadcast()

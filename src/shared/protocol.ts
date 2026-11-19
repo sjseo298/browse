@@ -82,8 +82,9 @@ export const BROWSER_NAME_KEY = "browserName"
 export const RELAY_ADDRESS_KEY = "agentRelayAddress"
 /** chrome.storage.local: list of RelayProfile entries connected simultaneously. */
 export const RELAY_PROFILES_KEY = "agentRelayProfiles"
-/** chrome.storage.local: target relay id when lending a user tab with the toolbar button. */
+/** chrome.storage.local: target relay id when lending a user tab with the toolbar button (`"all"` shares with all relays). */
 export const LEND_TARGET_KEY = "agentRelayLendTarget"
+export const LEND_TARGET_ALL = "all"
 export const DEFAULT_LOCAL_RELAY_ID = "local"
 
 export function defaultLocalRelayProfile(enabled = true): RelayProfile {

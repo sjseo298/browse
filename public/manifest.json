@@ -34,7 +34,8 @@
     "alarms",
     "webNavigation",
     "scripting",
-    "notifications"
+    "notifications",
+    "contextMenus"
   ],
   "host_permissions": [
     "<all_urls>"

@@ -21,6 +21,7 @@ import {
   HANDOFF_NOTIFICATIONS_KEY,
   HUMAN_INPUT_KEY,
   IDLE_MINUTES_KEY,
+  LEND_TARGET_ALL,
   agentGroupCollapse,
   agentGrouping,
   agentWindowPlacement,
@@ -334,13 +335,14 @@ function Settings() {
           <Show when={enabledRelays().length > 1}>
             <Row
               label="Toolbar-lent tabs go to"
-              description="Which connected OpenCode receives a tab when you click the browse icon on it."
+              description="Which connected OpenCode receives a tab when you click the browse icon (or All to share with every connected relay)."
             >
               <SegmentedControl
                 class="seg-lend"
                 value={state()?.lendTarget ?? enabledRelays()[0]?.id ?? DEFAULT_LOCAL_RELAY_ID}
                 onChange={(value) => value && relay.send({ type: "relay.setLendTarget", id: value })}
               >
+                <SegmentedControlItem value={LEND_TARGET_ALL}>All</SegmentedControlItem>
                 <For each={enabledRelays()}>
                   {(entry) => <SegmentedControlItem value={entry.id}>{entry.label}</SegmentedControlItem>}
                 </For>

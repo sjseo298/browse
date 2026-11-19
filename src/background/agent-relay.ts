@@ -71,6 +71,7 @@ export function createAgentRelay(input: {
   profile?: RelayProfile
   isKnownRelayTab?: (tabId: number) => boolean
   tabConflict?: (tabId: number) => string | undefined
+  canDetachTab?: (tabId: number) => boolean
   onTabOwned?: (tabId: number) => void
   onTabReleased?: (tabId: number) => void
   updateProfileAddress?: (address: string) => Promise<void>
@@ -416,6 +417,7 @@ export function createAgentRelay(input: {
     ungroup: grouping.ungroup,
     consumeCanceledUngroup,
     tabConflict: input.tabConflict,
+    canDetachTab: input.canDetachTab,
     onTabOwned: input.onTabOwned,
   })
 
@@ -806,7 +808,9 @@ export function createAgentRelay(input: {
       if (options.detachTabs) {
         for (const tabId of Array.from(relayTabs)) {
           forget(tabId)
-          await DebuggerHub.detach(tabId).catch(() => undefined)
+          if (input.canDetachTab?.(tabId) ?? true) {
+            await DebuggerHub.detach(tabId).catch(() => undefined)
+          }
         }
       }
       pendingAttach.clear()

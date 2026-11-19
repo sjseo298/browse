@@ -145,6 +145,7 @@ remote relays (e.g. an SSH-tunneled devcontainer on a dedicated port like `29980
 3. Open the 1-click `chrome-extension://.../onboarding.html#add=127.0.0.1:29980&code=...&label=OIPA` link in Google
    Chrome (or add it under **Relays** / **advanced** on the extension options page). Both relays stay connected at the
    same time with separate tab groups and colors.
+4. To share an already-open tab with **both** relays simultaneously, choose **All** under **Relays → Toolbar-lent tabs go to** (or right-click the page/icon and pick **Lend tab to All relays**).
 
 The connection isn't encrypted by browse; use an SSH tunnel or a private network (Tailscale or WireGuard), not the open internet.
 `browse set hostname 127.0.0.1` goes back to this computer only.
