@@ -3,8 +3,8 @@
   "app": "browse",
   "artifact": "cli",
   "channel": "stable",
-  "sequence": 5,
-  "published_at": "2026-11-19T01:02:02.234Z",
+  "sequence": 6,
+  "published_at": "2026-11-19T01:39:32.764Z",
   "release": {
     "version": "0.1.6",
     "notes_url": "https://github.com/sjseo298/browse/releases/tag/v0.1.6",
@@ -12,28 +12,28 @@
     "targets": {
       "macos-arm64": {
         "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-darwin-arm64-0.1.6.tgz",
-        "size": 2842135,
-        "sha256": "25f907fd997825a2ecba7a9f9df82afe821fad61f1644fbad139979c3c4ed8cd"
+        "size": 2842150,
+        "sha256": "cf3ec57b23e17d4e4f88de52ce3c5d9c4abde3c77a0bd700ab29ff9e6eb1164b"
       },
       "macos-x64": {
         "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-darwin-x64-0.1.6.tgz",
-        "size": 3045736,
-        "sha256": "441dd62d9709f374a19fedd461225d194d876b30bc46e8880f73c4e2724037e6"
+        "size": 3045744,
+        "sha256": "bdd389d2c4acc77b47981316bfc1e1701f449ef9e0c2eea0618e83f21a58ea08"
       },
       "macos-x64-baseline": {
         "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-darwin-x64-baseline-0.1.6.tgz",
-        "size": 3045744,
-        "sha256": "e8f8fc62261ba6f505540a86bc41bcd8db9b02537cbc16f5842b604f398833c3"
+        "size": 3045746,
+        "sha256": "5d662c648f37e217dbe25892a24a777500e8a1505ed8b5f25051b0ccb7825888"
       },
       "linux-x64": {
         "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-linux-x64-0.1.6.tgz",
-        "size": 3338938,
-        "sha256": "6703d4338ddce16574992de2d7aedda502b7e925f5a436c11c5f11e90642ce5f"
+        "size": 3338940,
+        "sha256": "4f5e1c2748af9d07a682c2ea1fef1e4a4913f2a3da7ebde6f4ca7cff03728f6b"
       },
       "linux-x64-baseline": {
         "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-linux-x64-baseline-0.1.6.tgz",
-        "size": 3338955,
-        "sha256": "70d1814dfba616de9550e032af72022cbf63de75efcc9041d6cf15e07e192da9"
+        "size": 3338956,
+        "sha256": "3055efb759ab0ddaf2f31f85e8cbe6c350b01702498ab99f9673ca32c4ce85f4"
       }
     },
     "distributions": [
