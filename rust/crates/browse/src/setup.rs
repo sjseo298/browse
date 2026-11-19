@@ -145,6 +145,18 @@ pub fn configure_opencode_with_port(file: &Path, entry: &Path, port: Option<u16>
     Ok(if existing.is_some() { McpEdit::Updated } else { McpEdit::Added })
 }
 
+fn can_fallback_in_place(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        matches!(error.raw_os_error(), Some(16 | 18)) // EBUSY (bind-mount) | EXDEV
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
+    }
+}
+
 pub fn write_keeping_mode(file: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let dir = file.parent().context("no parent folder")?;
     std::fs::create_dir_all(dir)?;
@@ -153,9 +165,16 @@ pub fn write_keeping_mode(file: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Ok(meta) = std::fs::metadata(file) {
         let _ = std::fs::set_permissions(&temporary, meta.permissions());
     }
-    std::fs::rename(&temporary, file).inspect_err(|_| {
+    if let Err(error) = std::fs::rename(&temporary, file) {
         let _ = std::fs::remove_file(&temporary);
-    })?;
+        // Bind-mounted config files in containers (e.g. Docker ~/.config/opencode/opencode.jsonc) reject rename()
+        // with EBUSY/EXDEV; overwrite the mounted inode directly instead.
+        if can_fallback_in_place(&error) {
+            std::fs::write(file, bytes)?;
+        } else {
+            return Err(error.into());
+        }
+    }
     Ok(())
 }
 
@@ -659,6 +678,13 @@ mod tests {
         let link = crate::remote::add_relay_link(29980, "ABCD1234", Some("OIPA Dev"));
         assert!(link.starts_with("chrome-extension://afeafocngkodbmaipcngoamamfmekgfo/onboarding.html#add=127.0.0.1:29980&code=ABCD-1234&label=OIPA%20Dev"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ebusy_and_exdev_trigger_in_place_write_fallback() {
+        assert!(can_fallback_in_place(&std::io::Error::from_raw_os_error(16)));
+        assert!(can_fallback_in_place(&std::io::Error::from_raw_os_error(18)));
+        assert!(!can_fallback_in_place(&std::io::Error::from_raw_os_error(2)));
     }
 
     #[test]
