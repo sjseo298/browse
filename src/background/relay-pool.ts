@@ -251,7 +251,7 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
       if (targetId && profiles.some((p) => p.id === targetId)) {
         const next = profiles.map((p) => (p.id === targetId ? { ...p, enabled: true, ...(label?.trim() ? { label: label.trim().slice(0, 40) } : {}) } : p))
         await persistProfiles(next)
-        await syncInstances(next, { startImmediately: true })
+        await syncInstances(next, { startImmediately: false })
         const spawned = instances.get(targetId)
         if (spawned) {
           const result = await spawned.connectTo(address, code)
@@ -277,7 +277,7 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
       if (match) {
         const next = profiles.map((p) => (p.id === match.id ? { ...p, label: params.label?.trim() ? cleanLabel : p.label, enabled: true } : p))
         await persistProfiles(next)
-        await syncInstances(next, { startImmediately: true })
+        await syncInstances(next, { startImmediately: false })
         const inst = instances.get(match.id)!
         const result = await inst.connectTo(normalized, params.code ?? "")
         return { id: match.id, ...result }
@@ -293,7 +293,6 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
       const next = [...profiles, created]
       await persistProfiles(next)
       const inst = spawnRelay(created)
-      inst.restoreOwnedTabs([])
       const result = await inst.connectTo(normalized, params.code ?? "")
       return { id, ...result }
     },

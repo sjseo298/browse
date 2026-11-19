@@ -331,6 +331,9 @@ export function createAgentRelay(input: {
     relayTabs,
     currentSocket: () => socket,
     isReloading: () => reloading,
+    relayId: currentProfile.id,
+    relayLabel: currentProfile.label,
+    isKnownRelayTab: input.isKnownRelayTab,
   })
 
   const debuggerOps = createRelayDebugger({
@@ -342,6 +345,7 @@ export function createAgentRelay(input: {
   })
 
   const resetAndConnect = (reason: string, closeReason?: string) => {
+    if (disposed) return
     attempts = 0
     clearTimeout(retry)
     retry = undefined
@@ -362,6 +366,8 @@ export function createAgentRelay(input: {
     currentSocket: () => socket,
     hostPort: () => ({ host, port }),
     automatic: () => automatic,
+    profile: input.profile ? () => currentProfile : undefined,
+    updateProfileAddress: input.updateProfileAddress,
     status: () => status,
     snapshot,
     generation: () => generation,
@@ -409,6 +415,8 @@ export function createAgentRelay(input: {
     group: grouping.group,
     ungroup: grouping.ungroup,
     consumeCanceledUngroup,
+    tabConflict: input.tabConflict,
+    onTabOwned: input.onTabOwned,
   })
 
   const connect = (reason: string) => {
