@@ -3,8 +3,8 @@
   "app": "browse",
   "artifact": "cli",
   "channel": "stable",
-  "sequence": 3,
-  "published_at": "2026-11-18T23:45:10.350Z",
+  "sequence": 4,
+  "published_at": "2026-11-19T00:29:54.150Z",
   "release": {
     "version": "0.1.6",
     "notes_url": "https://github.com/sjseo298/browse/releases/tag/v0.1.6",
@@ -12,18 +12,28 @@
     "targets": {
       "macos-arm64": {
         "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-darwin-arm64-0.1.6.tgz",
-        "size": 2839313,
-        "sha256": "ddaca02075a091a6c35215b96f5420cd944aeb276aad9f18f7523ed4cc2aba06"
+        "size": 2842081,
+        "sha256": "7a9b2052d0bcec329f3fd92a05a1813b757cf3b36e9f30bf82635023e86d14f8"
       },
       "macos-x64": {
         "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-darwin-x64-0.1.6.tgz",
-        "size": 3043258,
-        "sha256": "8f48b2907bd24514275fc25e0c8c56daf1db4d26671336f6e950c9041832b9ff"
+        "size": 3045698,
+        "sha256": "24e8737b7da25eef182dbb411011b26a76ea967007b802da9f42f2015063651b"
       },
       "macos-x64-baseline": {
         "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-darwin-x64-baseline-0.1.6.tgz",
-        "size": 3043295,
-        "sha256": "f1bcfa2136f34618ea9223d4d2eb258d1fe7edff1e80d3aa510515d5768c09be"
+        "size": 3045716,
+        "sha256": "1a4cae48cfa31619b7471408b13071c889ed2c58a77e95dcbef0c2de43be7b11"
+      },
+      "linux-x64": {
+        "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-linux-x64-0.1.6.tgz",
+        "size": 3338894,
+        "sha256": "8ab292e82cb9db21c827ae79fb8e25cd7ba50f175cb1d223da5bccd3e6677471"
+      },
+      "linux-x64-baseline": {
+        "url": "https://github.com/sjseo298/browse/releases/download/v0.1.6/opencode-browse-linux-x64-baseline-0.1.6.tgz",
+        "size": 3338901,
+        "sha256": "0ab093f225b3703c74eacd0d1c4919dc8b29e3d678be9f096990fd9703af0e56"
       }
     },
     "distributions": [

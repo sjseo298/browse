@@ -23,11 +23,11 @@ Options:
     -b, --binary <path>     Install from a local binary instead of downloading
         --no-setup          Only install the binary; don't run \`browse install\`
 
-Anything else goes to \`browse install\`, e.g. --remote, --agent claude or --no-modify-path.
+Anything else goes to \`browse install\`, e.g. --remote, --port 29980, --label OIPA, --agent claude or --no-modify-path.
 
 Examples:
     curl -fsSL https://sjseo298.github.io/browse/install | bash
-    curl -fsSL https://sjseo298.github.io/browse/install | bash -s -- --remote
+    curl -fsSL https://sjseo298.github.io/browse/install | bash -s -- --remote --port 29980 --label OIPA
     curl -fsSL https://sjseo298.github.io/browse/install | bash -s -- --channel dev
     curl -fsSL https://sjseo298.github.io/browse/install | bash -s -- --version 0.0.7
 EOF
