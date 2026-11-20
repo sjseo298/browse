@@ -1,5 +1,5 @@
 // The settings page (settings.html, the extension's options page). One card: the connection's state at the top, then a
-// row per setting (this browser's name, where agent tabs open and how they're grouped and collapsed and closed,
+// row per setting (this browser's name, where agent tabs open and how they're grouped, collapsed, muted and closed,
 // human-like input and handoff notifications, updates), then an Advanced section for the relay's address and pairing
 // code, reconnect and diagnostics. Each row is a chrome.storage.local key the background reads when it needs it (or
 // sends to the relay, for input); a setting the relay's environment fixes is shown as such.
@@ -22,6 +22,7 @@ import {
   HUMAN_INPUT_KEY,
   IDLE_MINUTES_KEY,
   LEND_TARGET_ALL,
+  MUTE_TABS_KEY,
   agentGroupCollapse,
   agentGrouping,
   agentWindowPlacement,
@@ -29,6 +30,7 @@ import {
   handoffNotifications,
   humanInput,
   idleMinutesSetting,
+  muteTabs,
   selfUpdatingInstall,
   type AgentGroupCollapse,
   type AgentGrouping,
@@ -54,6 +56,7 @@ function Settings() {
   const [grouping, setGrouping] = createStored(AGENT_GROUPING_KEY, agentGrouping)
   const [collapse, setCollapse] = createStored(AGENT_GROUP_COLLAPSE_KEY, agentGroupCollapse)
   const [idle, setIdle] = createStored(IDLE_MINUTES_KEY, idleMinutesSetting)
+  const [muted, setMuted] = createStored(MUTE_TABS_KEY, muteTabs)
   const [human, setHuman] = createStored(HUMAN_INPUT_KEY, humanInput)
   const [notifications, setNotifications] = createStored(HANDOFF_NOTIFICATIONS_KEY, handoffNotifications)
   const [storedName] = createStored(BROWSER_NAME_KEY, (value) => (typeof value === "string" ? value : ""))
@@ -214,6 +217,14 @@ function Settings() {
               <SegmentedControlItem value="60">1 hour</SegmentedControlItem>
               <SegmentedControlItem value="0">Never</SegmentedControlItem>
             </SegmentedControl>
+          </Row>
+          <Row
+            label="Mute agent tabs"
+            description="Silent when agents open them, so nothing plays from a tab you aren't looking at."
+          >
+            <Switch hideLabel checked={muted() === "on"} onChange={(on) => setMuted(on ? "on" : "off")}>
+              Mute agent tabs
+            </Switch>
           </Row>
         </Section>
 

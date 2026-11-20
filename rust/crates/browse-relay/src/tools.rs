@@ -133,14 +133,11 @@ async fn refresh_titles(relay: &Arc<Relay>) {
     }
 }
 
-/// A `tab` or `tabs` entry: the numeric id, or a chosen id like `work-mail`.
+/// A `tab` or `tabs` entry: the numeric id (possibly sent as a digit string), or a chosen id like `work-mail`.
 fn picked_tab(relay: &Arc<Relay>, value: &Value) -> anyhow::Result<i64> {
-    if let Some(tab) = value.as_i64() {
-        return Ok(tab);
-    }
-    match value.as_str() {
-        Some(chosen) => relay.resolve_chosen_tab(chosen.trim()),
-        None => bail!("tab ids are integers or chosen ids like `work-mail`, not {value}"),
+    match browse_core::tab_argument(value)? {
+        browse_core::TabArg::Id(tab) => Ok(tab),
+        browse_core::TabArg::Chosen(chosen) => relay.resolve_chosen_tab(&chosen),
     }
 }
 
@@ -357,7 +354,7 @@ impl Tool for SettingsTool {
         ToolSpec {
             name: "settings".into(),
             description: format!(
-                "Read or change the user's browse settings from the extension's options page: where agent tabs open (window), how they're grouped (grouping), when untouched agent tabs close (idleMinutes), human-like input (humanInput) and handoff notifications (handoffNotifications). Use it only when the user asks to change how browse behaves. Without `set` it returns each setting's stored value, the value in effect and the relay environment variable that overrides it, if any. With `set` it validates every value, applies the change at once and returns what changed: tell the user what you changed. Security switches ({}) are environment-only and can't be read or changed here.",
+                "Read or change the user's browse settings from the extension's options page: where agent tabs open (window), how they're grouped (grouping), whether browse collapses their groups by itself (groupCollapse), when untouched agent tabs close (idleMinutes), human-like input (humanInput), muting agent tabs (muteTabs) and handoff notifications (handoffNotifications). Use it only when the user asks to change how browse behaves. Without `set` it returns each setting's stored value, the value in effect and the relay environment variable that overrides it, if any. With `set` it validates every value, applies the change at once and returns what changed: tell the user what you changed. Security switches ({}) are environment-only and can't be read or changed here.",
                 crate::settings::SECURITY_VARIABLES.join(", ")
             ),
             input_schema: object(json!({ "set": { "type": "object", "description": "Settings to change; omit to only read them.", "properties": properties, "additionalProperties": false } }), &[]),

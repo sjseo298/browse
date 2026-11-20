@@ -171,7 +171,10 @@ fn tab_id(value: &str) -> anyhow::Result<Value> {
     if value.is_empty() {
         bail!("--tab takes a tab id (a number from `browse navigate` or `browse tabs`) or a chosen id like `work-mail`, not {value:?}");
     }
-    Ok(value.parse::<i64>().map_or_else(|_| Value::String(value.to_owned()), Value::from))
+    Ok(match browse_core::tab_argument(&Value::String(value.to_owned()))? {
+        browse_core::TabArg::Id(tab) => Value::from(tab),
+        browse_core::TabArg::Chosen(chosen) => Value::String(chosen),
+    })
 }
 
 /// A command-line value for an option with `schema`: JSON when that fits the schema, else the raw string when a
@@ -321,7 +324,12 @@ fn parse(spec: &ToolSpec, args: &[String]) -> anyhow::Result<ParseResult> {
                         }
                         None => Value::Bool(true),
                     },
-                    None => bail!("--{flag} needs a value; see `browse {name} --help`"),
+                    // A non-boolean takes the word after it (`--url https://example.com`), unless that word is
+                    // another option (`--url --readOnly`), which leaves the value missing as it was before.
+                    None => match take(&mut i) {
+                        Some(raw) => coerce(flag, schema, raw)?,
+                        None => bail!("--{flag} needs a value; see `browse {name} --help`"),
+                    },
                 };
                 arguments.insert(key, value);
             }
@@ -450,6 +458,7 @@ mod tests {
             json!({
                 "properties": {
                     "action": { "type": "string", "enum": ["list", "new", "close"] },
+                    "id": { "type": "string" },
                     "url": { "type": "string" },
                     "readOnly": { "type": "boolean" },
                     "tab": { "type": ["integer", "string"] }
@@ -485,6 +494,20 @@ mod tests {
         )
     }
 
+    fn execute() -> ToolSpec {
+        named(
+            "execute",
+            json!({
+                "properties": {
+                    "code": { "type": "string" },
+                    "timeoutMs": { "type": "integer", "minimum": 0 },
+                    "tab": { "type": ["integer", "string"] }
+                },
+                "required": ["code"]
+            }),
+        )
+    }
+
     #[test]
     fn positionals() {
         let navigate = spec(json!({ "properties": { "url": { "type": "string" }, "action": { "type": "string" } }, "required": [] }));
@@ -513,6 +536,51 @@ mod tests {
         let parsed = parse_arguments(&navigate, &["--readOnly", "https://example.com"]).unwrap();
         assert_eq!(parsed.get("readOnly"), Some(&json!(true)));
         assert_eq!(parsed.get("url"), Some(&json!("https://example.com")));
+    }
+
+    #[test]
+    fn option_values_can_be_the_following_word() {
+        let navigate = navigate();
+        let parsed = parse_arguments(&navigate, &["--url", "https://example.com"]).unwrap();
+        assert_eq!(parsed.get("url"), Some(&json!("https://example.com")));
+
+        let tabs = tabs();
+        let parsed = parse_arguments(&tabs, &["new", "--id", "probe-tab"]).unwrap();
+        assert_eq!(parsed.get("action"), Some(&json!("new")));
+        assert_eq!(parsed.get("id"), Some(&json!("probe-tab")));
+
+        let execute = execute();
+        let parsed = parse_arguments(&execute, &["--code", "return 1"]).unwrap();
+        assert_eq!(parsed.get("code"), Some(&json!("return 1")));
+
+        // A positional after the value still fills its slot.
+        let parsed = parse_arguments(&execute, &["--timeoutMs", "8000", "return 1"]).unwrap();
+        assert_eq!(parsed.get("timeoutMs"), Some(&json!(8000)));
+        assert_eq!(parsed.get("code"), Some(&json!("return 1")));
+    }
+
+    #[test]
+    fn inline_and_separate_option_values_are_the_same() {
+        let navigate = navigate();
+        let inline = parse_arguments(&navigate, &["--url=https://example.com"]).unwrap();
+        let separate = parse_arguments(&navigate, &["--url", "https://example.com"]).unwrap();
+        assert_eq!(inline, separate);
+
+        let execute = execute();
+        let inline = parse_arguments(&execute, &["--timeoutMs=8000", "return 1"]).unwrap();
+        let separate = parse_arguments(&execute, &["--timeoutMs", "8000", "return 1"]).unwrap();
+        assert_eq!(inline, separate);
+    }
+
+    #[test]
+    fn an_option_at_the_end_without_a_value_still_errors() {
+        let navigate = navigate();
+        let error = parse_arguments(&navigate, &["--url"]).unwrap_err().to_string();
+        assert!(error.contains("--url needs a value"), "{error}");
+
+        // Another option can't be the value.
+        let error = parse_arguments(&navigate, &["--url", "--readOnly"]).unwrap_err().to_string();
+        assert!(error.contains("--url needs a value"), "{error}");
     }
 
     #[test]
@@ -605,8 +673,13 @@ mod tests {
     #[test]
     fn tab_flag_keeps_numbers_and_passes_chosen_ids() {
         assert_eq!(tab_id("12").unwrap(), json!(12));
+        assert_eq!(tab_id("633559866").unwrap(), json!(633559866));
         assert_eq!(tab_id("work-mail").unwrap(), json!("work-mail"));
         assert!(tab_id("").is_err());
+        assert!(tab_id("12a").is_err(), "not a number, and not a chosen id either");
+        assert!(tab_id("-5").is_err(), "tab ids aren't negative");
+        assert!(tab_id(" 12 ").is_err(), "no whitespace tolerance");
+        assert!(tab_id("99999999999999999999").is_err(), "too large for a tab id");
     }
 
     #[test]

@@ -7,6 +7,8 @@ import {
   defaultLocalRelayProfile,
   LEND_TARGET_ALL,
   LEND_TARGET_KEY,
+  MUTE_TABS_KEY,
+  muteTabs,
   RELAY_ADDRESS_KEY,
   RELAY_PROFILES_KEY,
   relayAddress,
@@ -269,6 +271,10 @@ export function createRelayPool(input: { changed: (state: AgentRelayState) => vo
     chrome.alarms.onAlarm.addListener((alarm) => {
       if (alarm.name !== ALARM) return
       for (const inst of instances.values()) inst.triggerAlarm()
+    })
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && MUTE_TABS_KEY in changes)
+        void TabCleanup.setMuted(muteTabs(changes[MUTE_TABS_KEY]?.newValue) === "on").catch(() => undefined)
     })
     broadcast()
   })()

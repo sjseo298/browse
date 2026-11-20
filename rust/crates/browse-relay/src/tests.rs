@@ -165,7 +165,7 @@ fn fake_extension_with_urls(socket: Socket, next_tab: i64, urls: TargetUrls) -> 
                 "debugger.attach" => {
                     json!({})
                 }
-                "settings.get" | "settings.set" => json!({ "settings": { "window": "current", "grouping": "shared", "idleMinutes": 10, "humanInput": "on", "handoffNotifications": "recording" } }),
+                "settings.get" | "settings.set" => json!({ "settings": { "window": "current", "grouping": "shared", "groupCollapse": "auto", "idleMinutes": 10, "humanInput": "on", "muteTabs": "off", "handoffNotifications": "recording" } }),
                 "debugger.sendCommand" => match params["method"].as_str().unwrap_or("") {
                     "Target.getTargetInfo" => {
                         let tab = params["tabId"].as_i64().unwrap();
@@ -707,6 +707,61 @@ async fn reads_a_body_announced_on_a_get() {
     stream.read_to_end(&mut raw).await.unwrap();
     let raw = String::from_utf8_lossy(&raw);
     assert!(raw.starts_with("HTTP/1.1 410"), "{raw}");
+}
+
+/// A request the relay turns away (this one without a token) still gets its body read before the answer: closing with
+/// body bytes still unread makes the kernel send a reset instead of a clean close, and a macOS client then loses the
+/// 401 it hasn't read yet.
+#[tokio::test]
+async fn reads_a_body_before_turning_a_request_away() {
+    let h = harness().await;
+    let port = h.handle.port();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let head = format!("POST /tools/cancel HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n");
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let mut first = [0u8; 64];
+    assert!(tokio::time::timeout(Duration::from_millis(250), stream.read(&mut first)).await.is_err(), "the relay answered before the body it was promised");
+    stream.write_all(b"{}").await.unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await.unwrap();
+    let raw = String::from_utf8_lossy(&raw);
+    assert!(raw.starts_with("HTTP/1.1 401"), "{raw}");
+}
+
+/// A client announcing `Expect: 100-continue` hasn't sent its body: the relay answers without polling it (a poll
+/// would send `100 Continue` and invite an upload to a request it is turning away) and closes the connection.
+#[tokio::test]
+async fn a_continue_expectation_gets_no_continue() {
+    let h = harness().await;
+    let port = h.handle.port();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let head = format!("POST /tools/cancel HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n");
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let mut raw = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut raw)).await.expect("the relay answers without the body").unwrap();
+    let raw = String::from_utf8_lossy(&raw);
+    assert!(raw.starts_with("HTTP/1.1 401"), "{raw}");
+    assert!(!raw.contains("100 Continue"), "{raw}");
+    assert!(raw.to_ascii_lowercase().contains("connection: close"), "{raw}");
+}
+
+/// A body announced over MAX_BODY is refused from its size alone: no byte of it is read, so the relay answers promptly
+/// and closes the connection.
+#[tokio::test]
+async fn an_announced_body_over_the_limit_is_refused_unread() {
+    let h = harness().await;
+    let port = h.handle.port();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let head = format!(
+        "POST /tools/cancel HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        h.handle.token(),
+        crate::serve::MAX_BODY + 1
+    );
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let mut raw = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut raw)).await.expect("the relay refuses the announced size without the body").unwrap();
+    let raw = String::from_utf8_lossy(&raw);
+    assert!(raw.starts_with("HTTP/1.1 413"), "{raw}");
 }
 
 #[tokio::test]
@@ -1430,6 +1485,29 @@ async fn a_chosen_id_is_get_or_create_and_listed_with_the_callers_id() {
         assert!(output.is_error && tool_text(&output).contains("lowercase slug"), "{bad}: {}", tool_text(&output));
     }
     assert_eq!(seen.commands("tabs.create").len(), 1, "a refused id opens nothing");
+}
+
+#[tokio::test]
+async fn a_numeric_tab_id_sent_as_a_string_is_the_tab() {
+    let (h, _seen, _events) = connected("profile-numeric-string", 350).await;
+    let relay = h.handle.relay.clone();
+    let browser = h.handle.browser();
+    let first = browser.open_tab(None, &TabOptions::default()).await.unwrap().tab;
+    let second = browser.open_tab(None, &TabOptions::default()).await.unwrap().tab;
+
+    // Some MCP clients send the numeric id as a JSON string: every tool takes it as the number it spells.
+    let closed = text(&serde_json::to_value(tool(&relay, "tabs", json!({ "action": "close", "tab": first.to_string() })).await).unwrap());
+    assert_eq!(closed["closed"], json!([first]), "{closed}");
+    // `tabs` entries too.
+    let closed = text(&serde_json::to_value(tool(&relay, "tabs", json!({ "action": "close", "tabs": [second.to_string()] })).await).unwrap());
+    assert_eq!(closed["closed"], json!([second]), "{closed}");
+
+    // A string that only looks a little like a number is still refused, with an error that names both forms.
+    for (bad, expected) in [("12a".to_string(), "numeric tab id"), (format!("{first}-a"), "numeric tab id"), (" 12 ".to_string(), "spaces around it"), ("-5".to_string(), "numeric tab id")] {
+        let refused = tool(&relay, "tabs", json!({ "action": "close", "tab": bad })).await;
+        assert!(refused.is_error, "{bad}: {}", tool_text(&refused));
+        assert!(tool_text(&refused).contains(expected), "{bad}: {}", tool_text(&refused));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

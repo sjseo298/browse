@@ -13,7 +13,9 @@ import {
 import {
   defaultLocalRelayProfile,
   HUMAN_INPUT_KEY,
+  MUTE_TABS_KEY,
   humanInput,
+  muteTabs,
   RELAY_ADDRESS_KEY,
   type AgentRelayState,
   type AgentRelayStatus,
@@ -631,6 +633,8 @@ export function createAgentRelay(input: {
   }
   const onHumanInputChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
     if (area === "local" && HUMAN_INPUT_KEY in changes) void sendSettings()
+    if (!input.managedLifecycle && area === "local" && MUTE_TABS_KEY in changes)
+      void TabCleanup.setMuted(muteTabs(changes[MUTE_TABS_KEY]?.newValue) === "on").catch(() => undefined)
   }
 
   chrome.debugger.onEvent.addListener(onDebuggerEvent)
@@ -644,6 +648,7 @@ export function createAgentRelay(input: {
   chrome.tabs.onReplaced.addListener(onTabReplaced)
   if (!input.managedLifecycle) chrome.alarms.onAlarm.addListener(onAlarm)
   chrome.storage.onChanged.addListener(onHumanInputChanged)
+  // A code entered on the status page, a new relay address or a new name takes effect on a fresh connection.
   chrome.storage.onChanged.addListener(handshake.onPairingStorageChanged)
   const disposePopups = installPopupAdoption({
     log,
