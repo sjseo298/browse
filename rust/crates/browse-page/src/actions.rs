@@ -36,7 +36,7 @@ enum Prepare {
 impl From<anyhow::Error> for Prepare {
     fn from(error: anyhow::Error) -> Self {
         let message = error.to_string();
-        if message.contains("document changed") || message.contains("Could not find object") || message.contains("navigated or re-rendered") {
+        if crate::page::is_stale(&error) || message.contains("document changed") || message.contains("navigated or re-rendered") {
             Prepare::Detached
         } else {
             Prepare::Failed(error)
@@ -47,8 +47,15 @@ impl From<anyhow::Error> for Prepare {
 /// Resolves the target and returns it with the page point to send input to.
 pub async fn locate(page: &Arc<TabPage>, tab_state: &PageTab, input: &mut Input<'_>, spec: &Spec, options: PointerOptions) -> Result<(Resolved, Point)> {
     let deadline = Instant::now() + options.timeout;
+    let mut first = true;
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(100));
+        // The first attempt gets the whole timeout, so a failure reports the timeout the caller gave (not the
+        // microseconds-shorter remainder, which reads as "waited 499 ms").
+        let remaining = if std::mem::take(&mut first) {
+            options.timeout
+        } else {
+            deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(100))
+        };
         let resolved = target::resolve(page, tab_state, spec, ResolveOptions { timeout: remaining, act: true }).await?;
         match prepare(page, input, &resolved, deadline, options).await {
             Ok(point) => return Ok((resolved, point)),
@@ -64,6 +71,32 @@ pub async fn locate(page: &Arc<TabPage>, tab_state: &PageTab, input: &mut Input<
 
 fn describe(resolved: &Resolved, spec: &Spec) -> String {
     if resolved.label.is_empty() { spec.label() } else { format!("{} ({})", resolved.label, spec.label()) }
+}
+
+/// Fails when input at the element's click point would reach something else: the same "Can't reach" check and
+/// message as click, for callers that write to a field without clicking it (fill on text fields). Scrolls the
+/// element into view and hit-tests the point; it waits for nothing else, the caller having waited for visible,
+/// enabled and editable. When the element detaches or re-renders it resolves the spec again and checks the new
+/// element, until the deadline, and returns the element it checked, which is the one to write to. force does no
+/// check and just returns the element.
+pub async fn ensure_reachable(page: &Arc<TabPage>, tab_state: &PageTab, input: &mut Input<'_>, spec: &Spec, deadline: Instant, force: bool) -> Result<Resolved> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(100));
+        let resolved = target::resolve(page, tab_state, spec, ResolveOptions { timeout: remaining, act: true }).await?;
+        if force {
+            return Ok(resolved);
+        }
+        let options = PointerOptions { timeout: remaining, force: false, position: None, hit_test: true, enabled: true };
+        match reach(page, input, &resolved, deadline, options, false).await {
+            Ok(_) => return Ok(resolved),
+            Err(Prepare::Detached) if Instant::now() < deadline => {
+                tokio::time::sleep(RETRY).await;
+                continue;
+            }
+            Err(Prepare::Detached) => bail!("{} kept re-rendering or detaching from the page; take a new snapshot and retry", describe(&resolved, spec)),
+            Err(Prepare::Failed(error)) => return Err(error),
+        }
+    }
 }
 
 async fn prepare(page: &Arc<TabPage>, input: &mut Input<'_>, resolved: &Resolved, deadline: Instant, options: PointerOptions) -> std::result::Result<Point, Prepare> {
@@ -92,13 +125,25 @@ async fn prepare(page: &Arc<TabPage>, input: &mut Input<'_>, resolved: &Resolved
             }
         }
     }
+    match reach(page, input, resolved, deadline, options, true).await? {
+        Some(point) => Ok(point),
+        None => Err(Prepare::Failed(anyhow!("{name} has no visible box to click"))),
+    }
+}
+
+/// Scrolls the element into view, picks a point in it and checks that nothing covers that point, retrying a fade or
+/// a shift until the deadline. Returns None when it has no box to hit-test; wait_for_point says whether to retry
+/// that until the deadline or answer at once. No state waits: the states are prepare's job.
+async fn reach(page: &Arc<TabPage>, input: &mut Input<'_>, resolved: &Resolved, deadline: Instant, options: PointerOptions, wait_for_point: bool) -> std::result::Result<Option<Point>, Prepare> {
+    let element = &resolved.element;
+    let name = if resolved.label.is_empty() { "the element".to_string() } else { resolved.label.clone() };
     scroll_into_view(page, input, element).await?;
     let mut hit_attempts = 0;
     loop {
         let point = page.call_element(element, "clickPoint", vec![v(options.position.map(|p| json!({ "x": p.x, "y": p.y })))], true).await?;
         if point.is_null() {
-            if Instant::now() >= deadline || options.force {
-                return Err(Prepare::Failed(anyhow!("{name} has no visible box to click")));
+            if !wait_for_point || Instant::now() >= deadline || options.force {
+                return Ok(None);
             }
             tokio::time::sleep(RETRY).await;
             scroll_into_view(page, input, element).await?;
@@ -110,10 +155,10 @@ async fn prepare(page: &Arc<TabPage>, input: &mut Input<'_>, resolved: &Resolved
         }
         let (page_point, chain) = to_page(page, element, local).await?;
         if !options.hit_test || options.force {
-            return Ok(page_point);
+            return Ok(Some(page_point));
         }
         match hit_test(page, element, local, &chain).await? {
-            None => return Ok(page_point),
+            None => return Ok(Some(page_point)),
             Some(cover) => {
                 hit_attempts += 1;
                 if hit_attempts >= HIT_RETRIES || Instant::now() >= deadline {
@@ -172,10 +217,7 @@ pub async fn scroll_into_view(page: &Arc<TabPage>, input: &mut Input<'_>, elemen
     if input.human() && element.frame == page.main_frame() {
         human_scroll(page, input, element).await?;
     }
-    let scrolled = page.send("DOM.scrollIntoViewIfNeeded", json!({ "objectId": element.object_id }), element.session.as_deref()).await;
-    if scrolled.is_err() {
-        page.call_element(element, "scrollIntoView", vec![], false).await?;
-    }
+    page.call_element(element, "scrollIntoView", vec![], false).await?;
     Ok(())
 }
 
@@ -230,7 +272,7 @@ pub async fn with_modifiers(input: &mut Input<'_>, modifiers: &[String]) -> Resu
             "ControlOrMeta" => if input.mac() { "Meta" } else { "Control" },
             other => other,
         };
-        let def = crate::input::key_definition(name).filter(|_| crate::input::modifier_bit(name) != 0).ok_or_else(|| anyhow!("Unknown modifier {name:?}; use Shift, Control, Alt, Meta or ControlOrMeta"))?;
+        let def = crate::input::key_definition(name).filter(|_| crate::input::modifier_flag(name) != browse_core::Modifiers::NONE).ok_or_else(|| anyhow!("Unknown modifier {name:?}; use Shift, Control, Alt, Meta or ControlOrMeta"))?;
         input.key_down(&def).await?;
         held.push(def);
     }
@@ -245,11 +287,11 @@ pub async fn release_modifiers(input: &mut Input<'_>, held: &[crate::input::KeyD
 }
 
 /// Waits until the element is visible, enabled and editable.
-pub async fn wait_editable(page: &Arc<TabPage>, resolved: &Resolved, timeout: Duration, force: bool) -> Result<()> {
+pub async fn wait_editable(page: &Arc<TabPage>, resolved: &Resolved, deadline: Instant, force: bool) -> Result<()> {
     if force {
         return Ok(());
     }
-    let deadline = Instant::now() + timeout;
+    let timeout = deadline.saturating_duration_since(Instant::now());
     loop {
         let state = page.call_element(&resolved.element, "checkStates", vec![v(["visible", "enabled", "editable"])], true).await?;
         match state.as_str().unwrap_or("ok") {

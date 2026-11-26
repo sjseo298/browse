@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::{Duration, Instant};
 
-use browse_core::{CdpEvent, TabOptions, TabState, Tool};
+use browse_cdp::CdpEvent;
+use browse_core::{HandoffInfo, TabOptions, TabState, Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast, oneshot};
@@ -35,6 +36,78 @@ impl Owner {
         match self {
             Owner::Relay => "relay",
             Owner::User => "user",
+        }
+    }
+}
+
+/// Tab ids of direct-driver tabs start here, above Chrome's `i32` tab ids and the relay's own collision range.
+pub const DIRECT_TAB_BASE: i64 = 3_000_000_000;
+
+/// How browse reaches a tab: through the Chrome extension's link, or a direct protocol driver (WebDriver BiDi).
+#[derive(Clone)]
+pub enum Backend {
+    Extension,
+    Direct(Arc<DriverEntry>),
+}
+
+impl Backend {
+    pub fn direct(&self) -> Option<&Arc<DriverEntry>> {
+        match self {
+            Backend::Direct(entry) => Some(entry),
+            Backend::Extension => None,
+        }
+    }
+
+    pub fn is_direct(&self) -> bool {
+        matches!(self, Backend::Direct(_))
+    }
+}
+
+/// A browser the relay drives directly (`POST /drivers/connect`), next to the extension's links.
+pub struct DriverEntry {
+    /// Stable key (`driver:bidi:127.0.0.1:<port>`, or the caller's), which browsers.json and tabs' `link_key` use.
+    pub key: String,
+    /// The browser's id agents pass as `browser` (a slug of its base name, so an update doesn't rename it).
+    pub id: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub protocol: String,
+    pub transport: String,
+    pub endpoint: Option<String>,
+    pub local: bool,
+    pub driver: Arc<dyn browse_core::BrowserDriver>,
+    pub(crate) connected: AtomicBool,
+    pub(crate) pump: Mutex<Option<tokio::task::AbortHandle>>,
+}
+
+impl DriverEntry {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(key: String, id: String, name: String, version: Option<String>, endpoint: Option<String>, local: bool, driver: Arc<dyn browse_core::BrowserDriver>) -> Self {
+        let info = driver.info();
+        Self {
+            key,
+            id,
+            name,
+            version,
+            protocol: info.protocol.clone(),
+            transport: info.transport.clone(),
+            endpoint,
+            local,
+            connected: AtomicBool::new(true),
+            pump: Mutex::new(None),
+            driver,
+        }
+    }
+
+    pub fn connected(&self) -> bool {
+        self.connected.load(Ordering::SeqCst)
+    }
+
+    /// Marks the driver gone and stops its event pump.
+    pub(crate) fn disconnect(&self) {
+        self.connected.store(false, Ordering::SeqCst);
+        if let Some(pump) = self.pump.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
+            pump.abort();
         }
     }
 }
@@ -93,6 +166,15 @@ pub struct Tab {
     pub child_frames: HashSet<String>,
     /// The one CDP handle tools get for this attachment.
     pub cdp: Option<Arc<crate::cdp::TabCdp>>,
+    /// The one protocol-agnostic TabDriver tools get for this attachment.
+    pub driver: Option<Arc<dyn browse_core::TabDriver>>,
+    /// How browse reaches the tab.
+    pub backend: Backend,
+    /// A direct tab's unguarded driver: the relay's own enforcement (blanking an off-list page, even in a read-only
+    /// tab) goes through it.
+    pub raw_driver: Option<Arc<dyn browse_core::TabDriver>>,
+    /// A direct tab's page-event observer.
+    pub observer: Option<tokio::task::AbortHandle>,
 }
 
 impl Tab {
@@ -146,6 +228,13 @@ pub struct Handoff {
     pub done: Option<oneshot::Sender<&'static str>>,
 }
 
+impl Handoff {
+    /// How a tab's info shows it: what the user is asked to do, and since when.
+    pub fn info(&self) -> HandoffInfo {
+        HandoffInfo { message: self.message.clone(), started_at: self.started_at.clone() }
+    }
+}
+
 #[derive(Default)]
 pub struct Presented {
     pub dirty: bool,
@@ -171,6 +260,11 @@ pub struct HandshakeStats {
 
 pub struct State {
     pub links: Vec<Arc<Link>>,
+    /// Browsers driven directly (WebDriver BiDi), connected ones only.
+    pub drivers: Vec<Arc<DriverEntry>>,
+    /// Driver keys a `POST /drivers/connect` is connecting right now.
+    pub connecting: HashSet<String>,
+    next_direct_id: i64,
     pub generation: u64,
     to_relay: HashMap<(String, i64), i64>,
     from_relay: HashMap<i64, (String, i64)>,
@@ -208,6 +302,16 @@ pub struct State {
 }
 
 impl State {
+    /// Ends the running calls among `ids` that work in `tab`, with `message` as their error; returns how many.
+    pub fn stop_calls_with_ids(&mut self, ids: &[u64], tab: i64, message: &str) -> usize {
+        let picked: Vec<u64> = ids.iter().copied().filter(|id| self.calls.get(id).is_some_and(|call| call.tabs.contains(&tab))).collect();
+        for id in &picked {
+            self.stopped.insert(*id, message.to_string());
+            self.calls[id].abort.abort();
+        }
+        picked.len()
+    }
+
     pub fn link(&self, key: &str) -> Option<Arc<Link>> {
         self.links.iter().find(|l| l.key == key).cloned()
     }
@@ -224,6 +328,49 @@ impl State {
 
     pub fn connected(&self) -> bool {
         self.links.iter().any(|l| l.connected())
+    }
+
+    /// A connected browser driven directly, by id, name, endpoint or key.
+    pub fn driver_by_name(&self, wanted: &str) -> Option<Arc<DriverEntry>> {
+        let wanted = wanted.trim();
+        let lower = wanted.to_lowercase();
+        self.drivers
+            .iter()
+            .find(|d| d.id == lower)
+            .or_else(|| self.drivers.iter().find(|d| d.name.to_lowercase() == lower))
+            .or_else(|| self.drivers.iter().find(|d| d.endpoint.as_deref() == Some(wanted) || d.key == wanted))
+            .cloned()
+    }
+
+    /// Any browser is connected: an extension link or a direct driver. (`connected` is the extension's alone.)
+    pub fn any_connected(&self) -> bool {
+        self.connected() || self.drivers.iter().any(|d| d.connected())
+    }
+
+    /// A new id for a direct tab, never one a Chrome tab has or will be given, nor one an earlier relay handed out.
+    pub fn alloc_direct_tab_id(&mut self, key: &str) -> i64 {
+        let mut id = self.next_direct_id.max(DIRECT_TAB_BASE);
+        while self.from_relay.contains_key(&id) || self.tabs.contains_key(&id) {
+            id += 1;
+        }
+        self.next_direct_id = id + 1;
+        self.from_relay.insert(id, (key.to_string(), id));
+        id
+    }
+
+    /// Lets a direct tab's id go once the tab is gone (ids only grow, so it isn't handed out again).
+    pub fn release_direct_tab_id(&mut self, id: i64) {
+        if id >= DIRECT_TAB_BASE {
+            self.from_relay.remove(&id);
+        }
+    }
+
+    /// The id agents see for the browser a tab is in.
+    pub fn browser_id_of(&self, tab: &Tab) -> Option<String> {
+        match &tab.backend {
+            Backend::Direct(entry) => Some(entry.id.clone()),
+            Backend::Extension => self.link(&tab.link_key).map(|l| l.id.clone()),
+        }
     }
 
     /// The relay's id for a browser's tab, assigned the first time it's seen.
@@ -423,6 +570,9 @@ pub struct Relay {
     pub origins: HashSet<String>,
     pub file_roots: Vec<PathBuf>,
     pub auto_update: Option<AutoUpdateStatus>,
+    /// Idle cleanup for directly driven tabs, or an extension too old to report its setting
+    /// (OPENCODE_BROWSER_IDLE_TAB_TTL_MS, the idle close setting's 10 minute default when unset; None: never).
+    /// Extension tabs follow their browser's idleMinutes setting instead (`serve::reap_idle`).
     pub idle_tab_ttl: Option<Duration>,
     pub state: Mutex<State>,
     pub changed: Notify,
@@ -442,6 +592,14 @@ pub struct Relay {
     pub heartbeat: AtomicU64,
     /// The relay's tasks ended (it closed, or its runtime is gone): the watchdog stops watching.
     pub finished: AtomicBool,
+    /// Where to look for Firefox-family apps for `nextStep`; None looks nowhere (tests).
+    pub firefox: Option<crate::firefox::Discovery>,
+    /// The Chrome-family browsers here with browse enabled, to name a browser that only says it is Chrome.
+    pub installed: Option<InstalledBrowsers>,
+    /// When the relay last tried to attach the recorded Firefox profiles.
+    pub(crate) auto_attached: Mutex<Option<Instant>>,
+    /// Driver keys of recorded profiles whose WebDriver BiDi session another client holds.
+    pub(crate) firefox_busy: Mutex<Vec<String>>,
 }
 
 pub struct RelayConfig {
@@ -452,7 +610,19 @@ pub struct RelayConfig {
     pub version: String,
     pub build_id: String,
     pub auto_update: Option<AutoUpdateStatus>,
+    /// Where to look for Firefox-family apps (`crate::firefox::Discovery::system()`); None looks nowhere.
+    pub firefox: Option<crate::firefox::Discovery>,
+    /// The Chrome-family browsers here with browse enabled; None looks nowhere.
+    pub installed: Option<InstalledBrowsers>,
 }
+
+/// Names of the Chrome-family browsers on this computer with a profile that has browse enabled ("Google Chrome",
+/// "Helium"), from the `browse` binary's browser list.
+pub type InstalledBrowsers = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
+/// The idle close setting's 10 minute default (src/shared/protocol.ts DEFAULT_IDLE_MINUTES): the idle time for tabs
+/// no browser setting covers.
+const DEFAULT_IDLE_TTL_MS: u64 = 10 * 60_000;
 
 fn env_ms(variable: &str, fallback: u64) -> Option<Duration> {
     let value = std::env::var(variable).ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(fallback);
@@ -483,9 +653,12 @@ impl Relay {
             origins: crate::origins::allowed_extension_origins(),
             file_roots,
             auto_update: config.auto_update,
-            idle_tab_ttl: env_ms("OPENCODE_BROWSER_IDLE_TAB_TTL_MS", 15 * 60_000),
+            idle_tab_ttl: env_ms("OPENCODE_BROWSER_IDLE_TAB_TTL_MS", DEFAULT_IDLE_TTL_MS),
             state: Mutex::new(State {
                 links: Vec::new(),
+                drivers: Vec::new(),
+                connecting: HashSet::new(),
+                next_direct_id: DIRECT_TAB_BASE + (crate::util::now_ms() / 1000) as i64 * 8,
                 generation: 0,
                 to_relay: HashMap::new(),
                 from_relay: HashMap::new(),
@@ -522,6 +695,10 @@ impl Relay {
             inflight: Mutex::new(HashMap::new()),
             heartbeat: AtomicU64::new(0),
             finished: AtomicBool::new(false),
+            firefox: config.firefox,
+            installed: config.installed,
+            auto_attached: Mutex::new(None),
+            firefox_busy: Mutex::new(Vec::new()),
         }))
     }
 
@@ -563,6 +740,10 @@ impl Relay {
 
     /// Sends a command for a relay tab to the browser that owns it, translating the tab id both ways.
     pub async fn ext_tab(&self, tab: i64, method: &str, mut params: Value) -> Result<Value, RpcError> {
+        // A direct tab has no extension to show or group it: those calls do nothing.
+        if self.is_direct_tab(tab) {
+            return Ok(Value::Null);
+        }
         let Some((link, local)) = self.st().browser_tab(tab) else { return Err(RpcError::NotConnected(NOT_CONNECTED.into())) };
         params["tabId"] = local.into();
         let result = self.ext_link_raw(&link, method, params, None).await;
@@ -571,6 +752,11 @@ impl Relay {
                 self.me().forget_missing_tab(tab, method);
             }
         result
+    }
+
+    /// The tab is driven directly (it may be gone already: ids in the direct range are never extension tabs).
+    pub fn is_direct_tab(&self, tab: i64) -> bool {
+        tab >= DIRECT_TAB_BASE || self.st().tabs.get(&tab).is_some_and(|t| t.backend.is_direct())
     }
 
     pub async fn ext_link(&self, link: &Arc<Link>, method: &str, params: Value) -> Result<Value, RpcError> {
@@ -594,6 +780,9 @@ impl Relay {
 
     /// A CDP command for a tab (or one of its child sessions) through chrome.debugger.
     pub async fn debugger(&self, tab: i64, session: Option<&str>, method: &str, params: Value, timeout: Option<Duration>) -> Result<Value, RpcError> {
+        if self.is_direct_tab(tab) {
+            return Err(RpcError::Remote(format!("Tab {tab} is not a CDP extension tab")));
+        }
         let Some((link, local)) = self.st().browser_tab(tab) else { return Err(RpcError::NotConnected(NOT_CONNECTED.into())) };
         let mut wire = json!({ "tabId": local, "method": method, "params": if params.is_null() { json!({}) } else { params } });
         if let Some(session) = session {
@@ -608,6 +797,14 @@ impl Relay {
         };
         match &result {
             Err(RpcError::Remote(message)) if missing_tab(message) => self.me().forget_missing_tab(tab, method),
+            Err(RpcError::Remote(message)) if message.starts_with(NAVIGATE_DETACHED) => {
+                let url = message[NAVIGATE_DETACHED.len()..].to_string();
+                if !url.is_empty()
+                    && let Some(entry) = self.st().tabs.get_mut(&tab) {
+                        entry.url = url.clone();
+                    }
+                return Err(RpcError::Remote(navigate_detached_message(&url)));
+            }
             Err(RpcError::Remote(message))
                 if protected_ui_error(message) || (message.contains("not attached") && self.st().tabs.get(&tab).is_some_and(|t| t.protected_ui)) =>
             {
@@ -696,7 +893,8 @@ impl Relay {
             let mut entries: Vec<PersistedTab> = st
                 .tabs
                 .values()
-                .filter(|t| !t.closing)
+                // A direct tab's context id doesn't outlive its session, so a later relay can't give it back.
+                .filter(|t| !t.closing && !t.backend.is_direct())
                 .map(|t| PersistedTab {
                     tab: t.id,
                     target_id: t.target_id.clone(),
@@ -758,6 +956,17 @@ pub fn unattachable_message(tab: i64, url: &str) -> String {
     let page = if url.is_empty() { String::new() } else { format!(" ({})", crate::util::short_url(url)) };
     format!(
         "Tab {tab} is stuck on a Chrome error page{page}: its last load failed (blocked by the browser or another extension), and Chrome doesn't let browse into that page. Close it with the tabs tool and open another with navigate (without tab). A tab the user lent has to be navigated by the user."
+    )
+}
+
+/// The extension's answer when Chrome dropped the debugger mid Page.navigate but the tab is still there, followed by the
+/// tab's url (NAVIGATE_DETACHED in the extension's wire.ts).
+pub const NAVIGATE_DETACHED: &str = "Navigation detached the debugger; the tab is at ";
+
+pub fn navigate_detached_message(url: &str) -> String {
+    let page = if url.is_empty() { String::new() } else { format!(", leaving it at {}", crate::util::short_url(url)) };
+    format!(
+        "Chrome detached browse from the tab while it navigated{page}: another extension or Chrome itself probably blocked the page (an extension's block page or a Chrome error page). Try another URL, or ask the user what blocks this one."
     )
 }
 

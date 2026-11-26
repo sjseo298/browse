@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use browse_relay::ServeOptions;
 
-use crate::{VERSION, relay, update};
+use crate::{VERSION, browsers, relay, update};
 
 /// How long no agent may have used the browser before an update restarts the relay.
 const QUIET: Duration = Duration::from_secs(120);
@@ -44,6 +44,7 @@ pub fn run() -> anyhow::Result<i32> {
         version: VERSION.into(),
         build_id: BUILD_ID.into(),
         auto_update: Some(Arc::new(update::status_json)),
+        installed: Some(Arc::new(browsers::with_extension)),
         ..ServeOptions::default()
     };
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
@@ -52,6 +53,7 @@ pub fn run() -> anyhow::Result<i32> {
         if !spawned {
             eprintln!("browse relay listening at http://127.0.0.1:{}", handle.port());
         }
+        let mut auto_update = update::status_json();
         let relay = handle.relay.clone();
         let mut updater = update::Updater::spawn(Arc::new(move || relay.idle(quiet)));
         let mut notice = None;
@@ -78,6 +80,12 @@ pub fn run() -> anyhow::Result<i32> {
             if pending != notice {
                 notice = pending;
                 handle.update_notice(notice.clone());
+            }
+            // The background check's state reaches connected options pages as it changes, not only on handshake.
+            let status = update::status_json();
+            if status != auto_update {
+                auto_update = status;
+                handle.relay.send_relay_settings(None);
             }
             if spawned
                 && handle.idle(quiet)

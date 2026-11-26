@@ -91,6 +91,10 @@ export const SLOW_CDP = 2_000
 // Another extension's frame in the page (1Password, LastPass, Bitwarden) makes Chrome refuse commands or
 // drop the debugger; evicting the frame and re-attaching recovers.
 export const FOREIGN_FRAME = /Cannot access a chrome-extension:\/\/ URL|Debugger is not attached to the tab/i
+// A page blocked by another extension or by Chrome (an error page) drops the debugger in the middle of Page.navigate.
+export const DETACHED_COMMAND = /Detached while handling command/i
+/** Followed by the tab's current url; the relay reads it from there (NAVIGATE_DETACHED in relay.rs). */
+export const NAVIGATE_DETACHED = "Navigation detached the debugger; the tab is at "
 export const ATTACHED_TITLE = "browse · Agents can use this tab. Click to stop."
 
 export const CLOSE_CODES: Record<number, string> = {
@@ -242,6 +246,7 @@ export function relayAutoUpdate(input: unknown): RelayAutoUpdate | undefined {
     checkedAt: short(input.checkedAt),
     pending: short(input.pending),
     previous: short(input.previous),
+    checkFailed: typeof input.checkFailed === "string" && input.checkFailed.length > 0 ? input.checkFailed.slice(0, 300) : undefined,
   }
   const lastError = relayUpdateFailure(input.lastError)
   return {

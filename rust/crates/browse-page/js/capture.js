@@ -318,7 +318,7 @@ return ((rootOrSettings, locatorSettings, naming) => {
       if (headerRow) {
         const headers = headerRow.headers;
         if (headers.length === values.length && headers.every(Boolean))
-          return values.map((value, index) => `${headers[index]}: ${value}`).join(" | ");
+          return isVisible(headerRow.row) && Boolean(root?.contains(headerRow.row)) ? values.join(" | ") : values.map((value, index) => `${headers[index]}: ${value}`).join(" | ");
       }
       if (headerCells.length === cells.length)
         return values.join(" | ");
@@ -361,7 +361,7 @@ return ((rootOrSettings, locatorSettings, naming) => {
         return !1;
       const items = Array.from(menu.querySelectorAll("[role='option'], [role^='menuitem']")).filter(isVisible);
       return items.length > 0 && !items.some((item) => item.getAttribute("role") === "option" && item.querySelector?.("a[href], button"));
-    }, portalMenus = Array.from(document.querySelectorAll("[role='listbox'], [role='menu']")).filter(isOpenListboxOrMenu), mains = Array.from(document.querySelectorAll("main")).filter(isVisible);
+    }, portalMenus = Array.from(document.querySelectorAll("[role='listbox'], [role='menu']")).filter(isOpenListboxOrMenu), mains = Array.from(document.querySelectorAll("main")).filter((main) => isVisible(main) && !main.closest?.("[inert], [aria-hidden='true']"));
     if (dialogs.length > 0 || mains.length === 1 && portalMenus.some((menu) => !mains[0].contains?.(menu)))
       return fallbackRoot;
     if (mains.length === 1) {
@@ -846,7 +846,7 @@ return ((rootOrSettings, locatorSettings, naming) => {
           headerLandmarks.add(node);
       }
     const landmarks = new Set;
-    let controls = 0, capped = !1;
+    let controls = 0, frames = 0, capped = !1;
     const skipsToMain = (element) => {
       if (element.localName !== "a")
         return !1;
@@ -890,6 +890,8 @@ return ((rootOrSettings, locatorSettings, naming) => {
       for (let child = node.firstElementChild;child; child = child.nextElementSibling) {
         if (child === root)
           continue;
+        if (child.localName === "iframe" && isVisible(child))
+          frames++;
         if (child.matches(controlSelector) && !countControl(child))
           return !1;
         if (child.shadowRoot && !walk(child.shadowRoot))
@@ -903,10 +905,14 @@ return ((rootOrSettings, locatorSettings, naming) => {
       walk(scope.shadowRoot);
     if (!capped)
       walk(scope);
-    if (controls === 0)
+    if (controls === 0 && frames === 0)
       return;
-    const count = capped ? `${controls}+` : String(controls), landmarkCount = capped ? `${landmarks.size}+` : String(landmarks.size), landmarkPart = landmarks.size > 0 ? `${landmarkCount} ${landmarks.size === 1 ? "landmark" : "landmarks"} and ` : "", omitted = landmarks.size + controls;
-    return `scoped to <main>; ${landmarkPart}${count} ${controls === 1 && !capped ? "control" : "controls"} outside it ${omitted === 1 && !capped ? "is" : "are"} not shown (within: "body" to include them)`;
+    const count = capped ? `${controls}+` : String(controls), landmarkCount = capped ? `${landmarks.size}+` : String(landmarks.size), parts = [
+      ...landmarks.size > 0 ? [`${landmarkCount} ${landmarks.size === 1 ? "landmark" : "landmarks"}`] : [],
+      ...frames > 0 ? [`${frames} ${frames === 1 ? "iframe" : "iframes"}`] : [],
+      ...controls > 0 ? [`${count} ${controls === 1 && !capped ? "control" : "controls"}`] : []
+    ], omitted = landmarks.size + frames + controls;
+    return `scoped to <main>; ${parts.join(" and ")} outside it ${omitted === 1 && !capped ? "is" : "are"} not shown (within: "body" to include them)`;
   })();
   function* iterateCandidates(scope) {
     for (const headerEl of headerCandidateSet)
@@ -1003,7 +1009,7 @@ return ((rootOrSettings, locatorSettings, naming) => {
     const fallbackName = role === "group" ? "Group" : role === "dialog" || role === "alertdialog" ? "Dialog" : role === "listbox" ? "Listbox" : role === "menu" ? "Menu" : role === "table" ? "Table" : role === "list" ? "List" : role === "tablist" ? "Tab list" : isInteractive ? element.getAttribute("name") || element.getAttribute("data-testid") || element.getAttribute("data-test-id") || element.getAttribute("data-test") || role : "", name = truncate(displayName || fallbackName, isParagraph || isSafetyText || isStructural ? 180 : 120);
     if (!name)
       continue;
-    const details = isHeading ? `level=${headingDepth(element) + 1}` : isFrame ? frameSource(element) : detailsFor(element), primaryLink = role === "link" && isPrimaryLink(element) || headerCandidateSet.has(element), baseDepth = headingDepth(element), parentKeys = structuralParentKeys(element), overlayAncestor = element.closest?.("dialog, [role='dialog'], [role='alertdialog'], [role='listbox'], [role='menu']") ?? null, inActiveOverlay = Boolean((isInteractive || role === "dialog" || role === "alertdialog" || role === "listbox" || role === "menu") && overlayAncestor && overlayAncestor.getAttribute("aria-label") !== "slider" && overlayAncestor.getAttribute("aria-roledescription") !== "carousel"), labelProxy = (() => {
+    const unnamed = !displayName && (!isInteractive || fallbackName === role), details = isHeading ? `level=${headingDepth(element) + 1}` : isFrame ? frameSource(element) : detailsFor(element), primaryLink = role === "link" && isPrimaryLink(element) || headerCandidateSet.has(element), baseDepth = headingDepth(element), parentKeys = structuralParentKeys(element), overlayAncestor = element.closest?.("dialog, [role='dialog'], [role='alertdialog'], [role='listbox'], [role='menu']") ?? null, inActiveOverlay = Boolean((isInteractive || role === "dialog" || role === "alertdialog" || role === "listbox" || role === "menu") && overlayAncestor && overlayAncestor.getAttribute("aria-label") !== "slider" && overlayAncestor.getAttribute("aria-roledescription") !== "carousel"), labelProxy = (() => {
       if (!isInteractive)
         return;
       const label = visibleAssociatedLabel(element);
@@ -1023,6 +1029,7 @@ return ((rootOrSettings, locatorSettings, naming) => {
       ...parentKeys.length > 0 ? { parentKeys } : {},
       role,
       name,
+      ...unnamed ? { unnamed: !0 } : {},
       ...element === root ? { root: !0 } : {},
       ...isInteractive && identityName && !labelProxy ? { identityName } : {},
       ...labelProxy ? { selectorRole: "label" } : {},

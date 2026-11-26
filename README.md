@@ -54,7 +54,8 @@ extension, download `browse-extension-<version>.zip` from [GitHub Releases](http
 2. **Adds the browse MCP server to your agents.** In a terminal you get a picker: OpenCode and the agents found on this
    computer start checked (your last choice next time). Type to search all supported agents, ↑/↓ to move, Space or Tab
    to toggle, Enter to confirm. An agent running `browse install` sets up itself. Without a terminal OpenCode is the
-   default. Edits keep the comments and formatting of each agent's config.
+   default. Edits keep the comments and formatting of each agent's config, and a config that's a symlink (a
+   dotfiles repo, Nix Home Manager) stays one: browse writes the file it points at.
 3. **Connects the extension.** Open **Google Chrome** (or another Chromium-based browser — Safari is not supported).
    If no browser has browse yet, `browse install` opens the fork's [GitHub Releases](https://github.com/sjseo298/browse/releases/latest)
    in Chrome so you can download `browse-extension-<version>.zip`, unzip it, turn on **Developer mode** at
@@ -123,7 +124,10 @@ For any other stdio MCP client, run `browse mcp`:
 ```
 
 (`browse install --agent none` prints this with your path.) Re-running install updates the entries it wrote and
-leaves servers named browse that it didn't write alone.
+leaves servers named browse that it didn't write alone. With `OPENCODE_BROWSER_PORT` set, install writes the port into
+each entry's environment so agents start `browse mcp` on the relay the extension is paired with. dsh and Mistral Vibe
+are the exception: add `OPENCODE_BROWSER_PORT` to their env by hand (an entry you write yourself needs it too). Install
+never removes a port it wrote, so if you stop pinning, delete it from those entries or re-run install with the new port.
 
 ### Pairing
 
@@ -166,6 +170,11 @@ channel's release when it isn't the one running (a rollback reaches everyone too
 - `npx`, `bunx`, `pnpm dlx` and `yarn dlx` runs resolve the package themselves: they only tell you another release is
   out.
 
+Update checks and downloads use this computer's trusted certificates — the system store on macOS, Windows and Linux; on
+Linux `SSL_CERT_FILE`/`SSL_CERT_DIR` replace the system bundle, as with `curl` — and fall back to the bundled
+certificates when the system has none or doesn't trust the chain. A check that fails says why in `browse status` and
+on the extension's options page.
+
 A relay browse started restarts on the new version when it's idle (one you run with `browse serve` in a terminal keeps
 running until you restart it); agent tabs stay open and come back. A running MCP server keeps
 working with the newer relay until the agent restarts it. `browse update` updates now and `browse update --check` only
@@ -202,13 +211,21 @@ extension from your browser to finish.
 - **Tabs keep their ids, and an agent can name one.** `tabs` with `action: "new"` and an `id` like `work-mail` opens
   that tab once: asking again returns the same tab without navigating it, and every tool takes `work-mail` as `tab`.
   The id lasts while the tab stays open: a relay restart or extension reload keeps it, and a browser restart loses it
-  (opening that id again is a fresh tab). `tabs` lists each tab's id, url, title, group, last use and whether a call is
-  running in it. A tab opened with `keepOpen: true` stays until an agent or you close it; every other tab closes when
-  idle like the rest.
+  (opening that id again is a fresh tab). `tabs` lists each tab's id, url, title, group, last use, whether a call is
+  running in it, the browser window it's in, and a waiting handoff's message. A tab opened with `keepOpen: true` stays
+  until an agent or you close it; every other tab closes when idle like the rest. `keepOpen` needs extension 0.1.2 or
+  newer: an older one can't hold a tab open, so it still closes when idle and browse tells the agent.
+- **A task keeps to its window.** A new tab with a `group` label opens in the window where that label's tabs are, in
+  either window setting, so if you move a task's tabs to a window of their own, its next tabs open there too (when
+  they're split across windows, the one you used last; the agent is told so it can ask you). An agent can also open
+  a task in a new background window (`newWindow`) or in the window of a tab it names (`windowOf`); neither changes
+  your window setting. `OPENCODE_BROWSER_AGENT_WINDOW` fixes placement, so labels don't move tabs while it's set.
 - **Agents open their own tabs** in the background of the window you last used, grouped together and collapsed unless
-  you're looking at one (you can turn that off). Agents can't switch you to their tabs or bring a window to the front.
-  Tabs nobody touches for 10 minutes close by themselves (never while something runs on them). Closing agent tabs never
-  quits the browser: on Windows and Linux, browse leaves a new tab (or window) behind when it would close the last one.
+  you're looking at one (you can turn that off). By default, agents can't switch you to their tabs or bring a window to
+  the front. A relay started with `OPENCODE_BROWSER_ALLOW_FOREGROUND=1` lets `page.bringToFront()` in `execute` raise
+  the tab and its window. Tabs nobody touches for 10 minutes close by themselves, or whatever idle close is set to
+  below (never while something runs on them). Closing agent tabs never quits the browser or leaves it without a window:
+  browse leaves a new tab (or window) behind when it would close the last one.
 - **Relay restarts keep agent tabs.** The relay saves the tabs agents opened and their options, and takes them back
   when it starts again (after an update, say).
 - **Hand an agent one of your tabs** by clicking the toolbar button on it. The badge shows **ON**; click again to take
@@ -218,8 +235,18 @@ extension from your browser to finish.
   tab lends it again. Chrome's own pages, the Web Store included, can't be lent.
 - **Handoffs:** the page shows a small card with the site's origin. Do the human part, then click **Continue** on the
   card or the toolbar button. While a tab is recorded you get a system notification instead of the card.
+- **Uploads.** Large files, or sites that reject copied files, work when the browser is on the same computer and the
+  extension has "Allow access to file URLs" turned on in the browser's extensions page (browse → Details): that lets
+  the extension read files on this computer, and browse only hands it files from its file roots. Otherwise browse
+  copies the files in, up to 50 MB per call. Files that aren't on the relay's machine can be passed inline as base64
+  (`{ name, data }`): those always copy in and fit about 10 MB per call (the 50 MB limit is for paths copied in), and
+  mixing them with paths copies the paths in too.
 - **Several browsers at once.** Each connected browser has an id (like `chrome-macbook`); `status` lists them, and new
-  tabs open in the default browser unless `browser` names another.
+  tabs open in the default browser unless `browser` names another. The id comes from the browser's name, or the name
+  set in the extension's settings. Helium tells extensions it is Chrome, so a browser on this computer that says it is
+  Chrome is named Helium (`helium-macbook`) when Helium has browse and no other browser here that could say "Chrome"
+  does. When browse can't tell, a browser already named Helium keeps its name and id. A Chrome browse can't see (a
+  custom profile folder, say) next to Helium may be named Helium too: set a name for it in the extension's settings.
 - **Settings** (the extension's options page, applied right away): where agent tabs open (your window or their own),
   grouping (one shared group, one per task, or none), whether browse collapses agent groups by itself or leaves them
   as you set them (a handoff still opens its group so you can find the tab), when idle tabs close (10, 30, 60 minutes
@@ -237,7 +264,7 @@ OpenCode, which composes tools in code mode, gets the plain tools. Every other M
 | `navigate` | Open a page: without `tab`, in a new background tab whose id it returns |
 | `snapshot` | A compact outline of the page with refs (`e12`) for the other tools, iframes included; scopes to the page's main area when there's exactly one and says what it left out |
 | `click`, `fill`, `type`, `press`, `select`, `hover`, `drag`, `scroll` | Act on a ref, selector or point, with human-like input |
-| `wait_for`, `dialog`, `upload`, `eval` | Wait for text, a URL or an element; answer dialogs; set files; run JavaScript in the page |
+| `wait_for`, `dialog`, `upload`, `eval` | Wait for text, a URL or an element; answer dialogs; set files on an input or a button that opens the file chooser; run JavaScript in the page |
 | `screenshot`, `screenshot_diff` | The viewport, full page, an element or a rectangle; compare with a baseline |
 | `network`, `console` | Capture a tab's traffic (credentials redacted) or its console messages and errors |
 | `recording` | Record a tab to a video file |
@@ -246,6 +273,8 @@ OpenCode, which composes tools in code mode, gets the plain tools. Every other M
 | `handoff`, `demonstrate` | Ask you to do something only a person can do; ask you to show a flow while it records your steps |
 | `settings`, `status` | Read or change your settings when you ask; the relay, browsers, pairing state and what to do next |
 | `execute` | For other clients: JavaScript with a Playwright-style `page`, `snapshot()`, `ref()`, `handoff()`, `state` and `browse.<tool>()`. Each result starts with the tab it ended in, to pass back as `tab` |
+
+`click` and `fill` on text fields fail when something covers the target, naming what is on top, unless you pass `force: true`.
 
 Everything is a CLI too: `browse navigate https://example.com` prints the new tab's id, then `browse snapshot --tab
 <id>`, `browse click e12 --tab <id>`, `browse execute --file script.js`. `browse tools` lists them and `browse <tool>
@@ -312,8 +341,8 @@ to steer it, and that other programs on your computer may try to use the relay.
 - **WebMCP tools come from the page.** Their names, titles, descriptions, schemas, annotations, `origin` and results are
   whatever a page supplies; browse doesn't verify them, and an annotation like `readOnly` is only the page's word. Treat
   them like any other page text, not as instructions from the user.
-- **Bot challenges.** After a navigation browse reports Cloudflare, captcha walls and "access denied" pages and tells
-  the agent to hand interactive ones to you. It never solves them.
+- **Bot challenges.** After a navigation browse reports Cloudflare, captcha walls and "access denied" pages. For
+  interactive challenges the agent tries to solve it first and hands off to you if it doesn't clear.
 - **Your tabs stay yours.** Agents use only tabs they opened or you lent them. Only a real click on the card or the
   toolbar button finishes a handoff, so a page can't fake it.
 
@@ -324,23 +353,28 @@ when it starts: it stops after 30 minutes without use, or run `browse restart` f
 | --- | --- |
 | `OPENCODE_BROWSER_ALLOW_ALL_COOKIES=1` | Let tabs read and write every cookie in the profile |
 | `OPENCODE_BROWSER_ALLOW_ALL_STORAGE=1` | Let tabs use every site's storage, and load resources from any host with your credentials |
-| `OPENCODE_BROWSER_ALLOW_FOREGROUND=1` | Allow bringing a tab's window to the front |
+| `OPENCODE_BROWSER_ALLOW_FOREGROUND=1` | Let `page.bringToFront()` in `execute` raise the tab and its window (off by default; `browse restart` after setting it) |
 | `OPENCODE_BROWSER_ALLOW_FILE_URLS=1` | Allow `file:` URLs |
 | `OPENCODE_BROWSER_FILE_ROOTS` | More folders tools may read and write (path-list separated) |
-| `OPENCODE_BROWSER_AGENT_WINDOW=separate` | Open agent tabs in a separate window (`current`: in yours), overriding the options page |
+| `OPENCODE_BROWSER_AGENT_WINDOW=separate` | Open agent tabs in a separate window (`current`: in yours), overriding the options page; labelled tabs no longer follow their label's window |
 | `OPENCODE_BROWSER_HUMAN_INPUT=0` | Send input at full speed; overrides the options page |
+| `OPENCODE_BROWSER_IDLE_TAB_TTL_MS=600000` | Idle close time for tabs in browsers browse drives directly, or an extension too old to have the setting (`0`: never). Agent and lent tabs in the extension follow the idle close setting |
 | `OPENCODE_BROWSER_AUTO_UPDATE=notify` | Only tell about new versions (`off`: check, but never install or tell; `on`: install them, the default) |
 | `OPENCODE_BROWSER_CHALLENGE_WAIT_MS=15000` | How long to wait for a bot check the browser clears by itself |
 | `OPENCODE_BROWSER_EXTENSION_TIMEOUT_MS=30000` | How long the relay waits for the extension to answer a command |
 | `OPENCODE_BROWSER_PING_TIMEOUT_MS=10000` | How long a ping may go unanswered before the browser counts as asleep |
-| `OPENCODE_BROWSER_PORT=20000` | Pin the relay's port, with no fallback. The extension finds only browse's own ports (19988, 19990–19997) by itself, so enter `localhost:<port>` as its relay address when you pair |
+| `OPENCODE_BROWSER_PORT=20000` | Pin the relay's port, with no fallback. The extension finds only browse's own ports (19988, 19990–19997) by itself, so enter `localhost:<port>` as its relay address when you pair. Running `browse install` with it set writes it into each agent's MCP entry, so agents start `browse mcp` on it (dsh and Mistral Vibe need it added by hand); install never removes a port it wrote, so stop pinning by deleting it or re-running install with the new port |
 | `OPENCODE_BROWSER_TOOLS=plain\|execute\|all` | Which tools every client gets |
 
 ## Troubleshooting
 
 - `browse status` shows the install, the agents browse is set up in, updates, the relay, the extension and agent tabs,
-  and says what to do when the extension is missing, unpaired, closed or out of date. Agents get the same from the
-  `status` tool.
+  and says what to do when the extension is missing, unpaired, closed or out of date. A tab waiting on you is marked
+  `waiting on you: <message>`, and `browse status --json` or `browse tabs` gives the message and when the handoff
+  started (`handoff.message`, `handoff.startedAt`). Agents get the same from the `status` and `tabs` tools.
+  `browse show <tab>` brings that tab to the front, as clicking browse's handoff notification does (with no tab, the
+  only one waiting; `--json` prints `{ tab, url, handoff }`). It only raises a tab with a handoff waiting on you, so
+  agents still can't take your focus with it.
 - After the relay restarts, the extension reconnects by itself within about half a minute; calls made in the meantime
   wait for it.
 - An agent says browse's tools are missing: restart the agent (or reload its MCP servers) after `browse install`.
@@ -353,6 +387,10 @@ when it starts: it stops after 30 minutes without use, or run `browse restart` f
   the code in the extension's options.
 - An agent says browse was updated and its MCP server must restart: an MCP server started before an update to this
   version can't talk to the new relay. Restart the agent.
+- Windows says "An Application Control policy has blocked this file" (or npm reports `spawn UNKNOWN`): Smart App
+  Control blocks a `browse.exe` without an Authenticode signature, and every install method runs the same binary.
+  Releases are unsigned until Windows signing is turned on ([#317](https://github.com/anomalyco/browse/issues/317)),
+  so browse doesn't run on a computer with Smart App Control enforced.
 
 ## Development
 

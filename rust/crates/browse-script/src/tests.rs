@@ -4,13 +4,22 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use browse_core::{Browser, Cdp, Content, HandoffResult, TabId, TabInfo, TabOptions, TabState, Tool, ToolContext, ToolOutput, ToolSpec};
+use browse_core::{Browser, Content, HandoffResult, TabDriver, TabId, TabInfo, TabOptions, TabState, Tool, ToolContext, ToolOutput, ToolSpec};
 use serde_json::{Value, json};
+
+/// The tabs the fake was asked to bring to the front, and the refusal it should answer with.
+#[derive(Default)]
+struct Front {
+    tabs: std::sync::Mutex<Vec<TabId>>,
+    refusal: std::sync::Mutex<Option<String>>,
+}
 
 /// Tab 7 shows example.com; every tab id has its own state.
 #[derive(Default)]
 struct FakeBrowser {
     states: std::sync::Mutex<std::collections::HashMap<TabId, Arc<TabState>>>,
+    /// Some for a test that needs the front; the plain context refuses it as before.
+    front: Option<Arc<Front>>,
 }
 
 #[async_trait]
@@ -19,13 +28,21 @@ impl Browser for FakeBrowser {
         anyhow::bail!("no tabs here")
     }
     async fn tabs(&self) -> anyhow::Result<Vec<TabInfo>> {
-        Ok(vec![TabInfo { tab: 7, url: "https://example.com/".into(), title: "Example".into(), lent: false, opener: None, chosen: None, last_used: None, busy: false, options: TabOptions::default() }])
+        Ok(vec![TabInfo { tab: 7, url: "https://example.com/".into(), title: "Example".into(), lent: false, opener: None, chosen: None, last_used: None, busy: false, handoff: None, options: TabOptions::default() }])
     }
     async fn close_tab(&self, _: TabId) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn cdp(&self, _: TabId) -> anyhow::Result<Arc<dyn Cdp>> {
-        anyhow::bail!("no cdp here")
+    async fn tab_driver(&self, _: TabId) -> anyhow::Result<Arc<dyn TabDriver>> {
+        anyhow::bail!("no driver here")
+    }
+    async fn bring_to_front(&self, tab: TabId) -> anyhow::Result<()> {
+        let Some(front) = &self.front else { anyhow::bail!("no front here") };
+        front.tabs.lock().unwrap().push(tab);
+        match front.refusal.lock().unwrap().clone() {
+            Some(refusal) => anyhow::bail!(refusal),
+            None => Ok(()),
+        }
     }
     async fn state(&self, tab: TabId) -> anyhow::Result<Arc<TabState>> {
         Ok(self.states.lock().unwrap().entry(tab).or_default().clone())
@@ -38,21 +55,25 @@ impl Browser for FakeBrowser {
     }
 }
 
-/// `echo` returns its arguments, `fail` fails with `message`, `picture` returns an image, `handoff` waits `ms`.
+/// `echo` returns its arguments, `fail` fails with `message`, `picture` returns an image, `handoff` waits `ms`, `cut`
+/// returns a result cut to fit like an oversized eval's.
 struct Fake(&'static str);
 
 #[async_trait]
 impl Tool for Fake {
     fn spec(&self) -> ToolSpec {
-        ToolSpec { name: self.0.into(), description: String::new(), input_schema: json!({ "type": "object" }) }
+        ToolSpec { name: self.0.into(), description: String::new(), input_schema: json!({ "type": "object" }), output_schema: None }
     }
     async fn call(&self, _ctx: ToolContext, args: Value) -> anyhow::Result<ToolOutput> {
         Ok(match self.0 {
             "echo" => ToolOutput::text(args.to_string()),
             "fail" => ToolOutput::error(args["message"].as_str().unwrap_or("failed").to_string()),
-            "picture" => ToolOutput { content: vec![Content::Image { data: "iVBORw0KGgo=".into(), mime_type: "image/png".into() }], is_error: false },
+            "picture" => ToolOutput { content: vec![Content::Image { data: "iVBORw0KGgo=".into(), mime_type: "image/png".into() }], is_error: false, structured_content: None },
             // Without a tab, navigate opens tab 7.
             "navigate" => ToolOutput::text(json!({ "tab": args.get("tab").cloned().unwrap_or(json!(7)), "url": args["url"], "title": "T", "status": 200, "navigated": true }).to_string()),
+            // Echo the upload args so a test can see what setInputFiles hands the tool.
+            "upload" => ToolOutput::text(args.to_string()),
+            "cut" => ToolOutput { structured_content: Some(json!({ "value": null, "truncated": "the result is 300002 characters" })), ..ToolOutput::text("\"xxxx\n… [truncated: the result is 300002 characters]") },
             "handoff" => {
                 tokio::time::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(0))).await;
                 ToolOutput::text(json!({ "outcome": "continued" }).to_string())
@@ -66,8 +87,14 @@ fn context() -> ToolContext {
     ToolContext { browser: Arc::new(FakeBrowser::default()), file_roots: vec![] }
 }
 
+fn front_context() -> (ToolContext, Arc<Front>) {
+    let front = Arc::new(Front::default());
+    let browser = FakeBrowser { front: Some(front.clone()), ..Default::default() };
+    (ToolContext { browser: Arc::new(browser), file_roots: vec![] }, front)
+}
+
 fn execute() -> Arc<dyn Tool> {
-    let fakes: Vec<Arc<dyn Tool>> = ["echo", "fail", "picture", "navigate", "handoff"].into_iter().map(|n| Arc::new(Fake(n)) as Arc<dyn Tool>).collect();
+    let fakes: Vec<Arc<dyn Tool>> = ["echo", "fail", "picture", "navigate", "handoff", "upload", "cut"].into_iter().map(|n| Arc::new(Fake(n)) as Arc<dyn Tool>).collect();
     crate::tools(&fakes).remove(0)
 }
 
@@ -120,6 +147,26 @@ async fn tools_and_errors() {
     assert_eq!(ok("page.url()").await, "about:blank", "a page without a tab is blank");
     let fetched = err("await fetch('https://example.com')").await;
     assert!(fetched.contains("page.evaluate"), "{fetched}");
+    // A result cut to fit (eval over its cap) fails the call instead of handing the script the cut JSON text.
+    let cut = err("const r = await browse.cut({}); return r.length").await;
+    assert!(cut.contains("cut: the result is 300002 characters") && cut.contains("call once per part"), "{cut}");
+}
+
+#[tokio::test]
+async fn handled_rejections_do_not_warn() {
+    // page.title() rejects before the await attaches (the page has no tab), and the catch still handles it.
+    let caught = ok(r#"try { await page.title() } catch (e) { return "caught: " + e.message.slice(0, 24) }"#).await;
+    assert!(caught.starts_with("caught: page has no tab yet"), "{caught}");
+    assert!(!caught.contains("Warnings:"), "a caught rejection is not a warning: {caught}");
+    let chained = ok(r#"return await page.title().catch((e) => "caught: " + e.message.slice(0, 8))"#).await;
+    assert!(chained.starts_with("caught: page has"), "{chained}");
+    assert!(!chained.contains("Warnings:"), "{chained}");
+
+    // A rejection nothing ever awaits is still reported.
+    let dropped = ok("page.title(); return 'done'").await;
+    assert!(dropped.contains("Unhandled promise rejection: page has no tab yet"), "{dropped}");
+    let rejected = ok("Promise.reject(new Error('boom')); return 'done'").await;
+    assert!(rejected.contains("Unhandled promise rejection: boom"), "{rejected}");
 }
 
 #[tokio::test]
@@ -134,6 +181,48 @@ async fn navigation_and_images() {
     let (_, output) = run_in(&context(), json!({ "code": "await browse.picture(); return 1" })).await;
     assert_eq!(output.content.len(), 1);
     assert_eq!(ok("(await browse.picture()).toString('base64')").await, "iVBORw0KGgo=");
+}
+
+#[tokio::test]
+async fn set_input_files_sends_paths_and_inline_bytes() {
+    let code = r##"
+      const strip = (result) => result.files.map((file) => {
+        if (typeof file === "string") return file
+        const { lastModified, ...rest } = file
+        return rest
+      })
+      const one = await page.setInputFiles("#file", { name: "a.txt", mimeType: "text/plain", buffer: new Uint8Array([104, 105]) })
+      const two = await page.setInputFiles("#file", [
+        { name: "b.bin", buffer: new Uint8Array([0, 1, 2]).buffer },
+        { name: "c.txt", data: "aGVsbG8=" },
+        { name: "d.txt", buffer: new Uint8Array([9, 104, 105]).subarray(1) },
+        "local.txt",
+      ])
+      const three = await page.locator("#file").setInputFiles({ name: "e.txt", data: "IQ==" })
+      return { one: strip(one), two: strip(two), three: strip(three) }
+    "##;
+    let (text, output) = run_in(&context(), json!({ "code": code, "tab": 7 })).await;
+    assert!(!output.is_error, "{text}");
+    let expected = r#"{"one":[{"name":"a.txt","data":"aGk=","mimeType":"text/plain"}],"two":[{"name":"b.bin","data":"AAEC"},{"name":"c.txt","data":"aGVsbG8="},{"name":"d.txt","data":"aGk="},"local.txt"],"three":[{"name":"e.txt","data":"IQ=="}]}"#;
+    assert!(text.contains(expected), "{text}");
+
+    // A buffer without lastModified gets now, like Playwright's in-memory files.
+    let (last_modified, output) = run_in(
+        &context(),
+        json!({ "code": "const r = await page.setInputFiles('#file', { name: 'stamp.txt', buffer: new Uint8Array([1]) }); return r.files[0].lastModified", "tab": 7 }),
+    )
+    .await;
+    assert!(!output.is_error, "{last_modified}");
+    let last_modified: u64 = last_modified.lines().last().unwrap().parse().unwrap();
+    assert!(last_modified > 1_704_067_200_000, "{last_modified}");
+
+    let (message, output) = run_in(&context(), json!({ "code": "try { await page.setInputFiles('#file', { name: 'x.txt' }) } catch (e) { return e.message }", "tab": 7 })).await;
+    assert!(!output.is_error, "{message}");
+    assert!(message.contains("Uint8Array") && message.contains("base64"), "{message}");
+    // A string buffer is mistake-prone text, not the bytes base64 decoding would produce.
+    let (message, output) = run_in(&context(), json!({ "code": "try { await page.setInputFiles('#file', { name: 'x.bin', buffer: 'AAEC' }) } catch (e) { return e.message }", "tab": 7 })).await;
+    assert!(!output.is_error, "{message}");
+    assert!(message.contains("pass base64 as data"), "{message}");
 }
 
 #[tokio::test]
@@ -176,6 +265,33 @@ async fn timers_state_and_limits() {
     assert!(memory.contains("out of memory"), "{memory}");
     let deep = err("const f = (n) => f(n + 1); f(0)").await;
     assert!(deep.contains("stack") || deep.contains("RangeError") || deep.contains("InternalError"), "{deep}");
+}
+
+#[tokio::test]
+async fn bring_to_front_calls_the_browser_and_reports_refusal_as_a_warning() {
+    let (ctx, front) = front_context();
+    let (text, output) = run_in(&ctx, json!({ "code": "await page.bringToFront(); return 'raised'", "tab": 7 })).await;
+    assert!(!output.is_error, "{text}");
+    assert!(text.contains("raised"), "{text}");
+    assert_eq!(*front.tabs.lock().unwrap(), vec![7], "the page's tab is used");
+
+    *front.refusal.lock().unwrap() = Some(
+        "browse blocked Page.bringToFront: it raises the user's browser window over their work; set OPENCODE_BROWSER_ALLOW_FOREGROUND=1 on the relay to allow it.".into(),
+    );
+    let (text, output) = run_in(&ctx, json!({ "code": "await page.bringToFront(); return 'completed'", "tab": 7 })).await;
+    assert!(!output.is_error, "a refusal is a warning, not a script error: {text}");
+    assert!(text.contains("completed"), "{text}");
+    assert!(
+        text.contains("Warnings:") && text.contains("page.bringToFront(): browse blocked Page.bringToFront") && text.contains("OPENCODE_BROWSER_ALLOW_FOREGROUND=1"),
+        "{text}"
+    );
+    assert_eq!(front.tabs.lock().unwrap().len(), 2, "the refused call was still attempted");
+
+    let (ctx, front) = front_context();
+    let (text, output) = run_in(&ctx, json!({ "code": "await page.bringToFront(); return 'no tab'", "tab": null })).await;
+    assert!(!output.is_error, "{text}");
+    assert!(text.contains("no tab") && !text.contains("Warnings:"), "{text}");
+    assert!(front.tabs.lock().unwrap().is_empty(), "a page with no tab asks for nothing");
 }
 
 #[tokio::test]

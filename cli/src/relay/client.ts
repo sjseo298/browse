@@ -3,6 +3,7 @@ import { defaultPort } from "./helpers.ts"
 import {
   configuredRelayPort,
   endpointForPort,
+  isBrowseVersion,
   processAlive,
   readRelayState,
   resolveRelayPort,
@@ -222,10 +223,30 @@ export const make = Effect.fn("RelayClient.make")(function* (options?: {
       }),
     )
 
+  /**
+   * The socket failure's code (ECONNRESET, EPIPE, ...) from the Effect error's cause chain, so a transport failure can
+   * name what happened instead of reading only like a relay that isn't there.
+   */
+  const transportCauseCode = (cause: unknown): string | undefined => {
+    const seen = new Set<unknown>()
+    let current = cause
+    while (typeof current === "object" && current !== null && !seen.has(current)) {
+      seen.add(current)
+      const failure = current as { readonly code?: unknown; readonly cause?: unknown }
+      if (typeof failure.code === "string") return failure.code
+      current = failure.cause
+    }
+    return undefined
+  }
+
   const transportError = (path: string, at?: string) => (cause: unknown) => {
     const endpoint = at ?? currentEndpoint()
+    const code = transportCauseCode(cause)
+    const unreachable = `browse relay is not reachable at ${endpoint}. Relay-backed CLI commands start it automatically; use \`${cliCommand("serve")}\` only for foreground debugging.`
     return new RelayUnreachable({
-      message: `browse relay is not reachable at ${endpoint}. Relay-backed CLI commands start it automatically; use \`${cliCommand("serve")}\` only for foreground debugging.`,
+      // A refusal is the ordinary "no relay yet" answer and keeps its message; any other transport failure names its
+      // code, so a reset is distinguishable from a relay that isn't running.
+      message: code === undefined || code === "ECONNREFUSED" ? unreachable : `${unreachable} (${code})`,
       endpoint,
       path,
       cause,
@@ -320,11 +341,7 @@ export const make = Effect.fn("RelayClient.make")(function* (options?: {
               code: "relay-starting",
             }))
           }
-          if (
-            response.status !== 200 ||
-            typeof reply?.version !== "string" ||
-            typeof reply.instanceId !== "string"
-          ) return Effect.fail(notBrowse(endpoint, body))
+          if (response.status !== 200 || !isBrowseVersion(reply)) return Effect.fail(notBrowse(endpoint, body))
           // A live relay.json for this install is authoritative: the verified port and instance must be exactly its.
           const after = liveRelayState()
           if (state !== undefined && after === undefined) return Effect.fail(transportError("/version", endpoint)(body))
@@ -405,7 +422,12 @@ export const make = Effect.fn("RelayClient.make")(function* (options?: {
 
   // Writes can legitimately wait for a human handoff or a command with no deadline. Probe the relay while waiting,
   // rather than shortening those operations or retrying a write whose outcome we don't know.
-  const checkWhileWaiting = Effect.sleep(30_000).pipe(Effect.andThen(getJson("/version", RelayVersion)), Effect.forever)
+  const checkWhileWaiting = Effect.sleep(30_000).pipe(
+    Effect.andThen(requestJson("/version", RelayVersion)),
+    // A listener that isn't browse no longer proves the relay is alive: fail like any other foreign endpoint.
+    Effect.flatMap(({ value, endpoint }) => isBrowseVersion(value) ? Effect.succeed(value) : Effect.fail(notBrowse(endpoint, value))),
+    Effect.forever,
+  )
 
   const postJson = <A>(
     path: string,
@@ -451,8 +473,8 @@ export const make = Effect.fn("RelayClient.make")(function* (options?: {
     version: Effect.suspend(() => {
       const state = liveRelayState()
       const probed = currentEndpoint()
-      // Map transport/decode/404 failures only: a parsed body without instanceId or with a mismatched instance below is
-      // another program, whatever relay.json did.
+      // Map transport/decode/404 failures only: a parsed body without browse's /version shape, or with a mismatched
+      // instance below, is another program, whatever relay.json did.
       const probe = requestJson("/version", RelayVersion).pipe(
         Effect.mapError((error) => {
           if (!(error instanceof RelayDecodeFailed || (error instanceof RelayRejected && !error.code && error.status === 404))) return error
@@ -464,11 +486,12 @@ export const make = Effect.fn("RelayClient.make")(function* (options?: {
         }),
       )
       return probe.pipe(
-        // Another product on the port (Playwriter answers `{ version }` alone): without browse's instanceId this is not
-        // a browse relay, and must never be mistaken for one. Same path as any other foreign listener.
+        // Another program's server on the port (Playwriter 0.12.0 answers version, pid and activeExecutes, sometimes an
+        // instanceId) lacks browse's buildId, startedAt and shutdownProtocol: not a browse relay, and never to be
+        // mistaken for one.
         Effect.flatMap(({ value: version, endpoint }): Effect.Effect<RelayVersion, RelayClientError> => {
+          if (!isBrowseVersion(version)) return Effect.fail(notBrowse(endpoint, version))
           const instanceId = version.instanceId
-          if (typeof instanceId !== "string") return Effect.fail(notBrowse(endpoint, version))
           const after = liveRelayState()
           if (state !== undefined && after === undefined) return Effect.fail(transportError("/version", endpoint)(version))
           if (state !== undefined && !sameLiveState(state, after)) return Effect.fail(notBrowse(endpoint, version))
@@ -534,8 +557,19 @@ export const make = Effect.fn("RelayClient.make")(function* (options?: {
 
 const layer: Layer.Layer<Service, RelayConfigInvalid, HttpClient.HttpClient> = Layer.effect(Service, make())
 
+/**
+ * The relay's `node:http` client with one keep-alive agent, shared by the CLI, the MCP server and the opencode library
+ * client. The agent `NodeHttpClient.layerNodeHttp` creates with default options (no keep-alive) sends
+ * `Connection: close`, so the relay closes the socket right after writing each response; on Windows under Bun reading
+ * that response can surface as `read ECONNRESET`. With keep-alive the relay keeps the connection open between
+ * requests. Node and Bun unref idle keep-alive sockets, so a one-shot CLI command still exits when its work is done.
+ */
+export const relayHttpClient: Layer.Layer<HttpClient.HttpClient> = NodeHttpClient.layerNodeHttpNoAgent.pipe(
+  Layer.provide(NodeHttpClient.layerAgentOptions({ keepAlive: true })),
+)
+
 /** RelayClient backed by `node:http` (avoiding undici's 5-minute headersTimeout on long handoffs/commands), for standalone CLI/MCP wiring. */
-export const layerFetch: Layer.Layer<Service, RelayConfigInvalid> = layer.pipe(Layer.provide(NodeHttpClient.layerNodeHttp))
+export const layerFetch: Layer.Layer<Service, RelayConfigInvalid> = layer.pipe(Layer.provide(relayHttpClient))
 
 /**
  * The process the relay watches for this MCP server: an older install's supervisor when it started this server
@@ -548,5 +582,5 @@ function mcpClientPid(): number {
 
 /** layerFetch for the MCP server, which names its process to the relay (see `make`). */
 export const layerFetchMcp: Layer.Layer<Service, RelayConfigInvalid> = Layer.effect(Service, make({ clientPid: mcpClientPid() })).pipe(
-  Layer.provide(NodeHttpClient.layerNodeHttp),
+  Layer.provide(relayHttpClient),
 )

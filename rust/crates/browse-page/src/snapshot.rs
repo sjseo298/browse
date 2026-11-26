@@ -10,7 +10,8 @@ use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::page::{Element, ElementOr, TabPage, is_context_lost, v};
+use browse_core::LoadState;
+use crate::page::{Element, ElementOr, TabPage, is_stale, v};
 use crate::state::{AriaRefs, Baseline, PageTab, RefTarget};
 use crate::target;
 
@@ -32,6 +33,9 @@ pub struct Entry {
     pub parent_keys: Option<Vec<String>>,
     pub role: String,
     pub name: String,
+    /// `name` is a stand-in (the role, or "List" for a list), not the element's own, so the line shows none.
+    #[serde(default)]
+    pub unnamed: bool,
     pub identity_name: Option<String>,
     pub details: Option<String>,
     pub selector: Option<String>,
@@ -194,7 +198,11 @@ fn render_capture(capture: &Capture) -> RenderedCapture {
         .iter()
         .zip(&depths)
         .map(|(entry, depth)| RenderedEntry {
-            prefix: format!("{}- {} \"{}\"", "  ".repeat(*depth as usize), entry.role, escape_name(&entry.name)),
+            prefix: if entry.unnamed {
+                format!("{}- {}", "  ".repeat(*depth as usize), entry.role)
+            } else {
+                format!("{}- {} \"{}\"", "  ".repeat(*depth as usize), entry.role, escape_name(&entry.name))
+            },
             details: entry.details.clone(),
             selector: entry.selector.clone(),
             role: entry.selector.as_ref().map(|_| entry.selector_role.clone().unwrap_or_else(|| entry.role.clone())),
@@ -263,6 +271,63 @@ pub fn diff_entries(previous: &[RenderedEntry], current: &[RenderedEntry]) -> Ve
     ops
 }
 
+/// The changed lines of a diff, and how many entries were added, removed and unchanged. A changed table row is
+/// preceded by its table's header row, unmarked, when the header itself didn't change, so its values keep their
+/// column names.
+fn diff_lines(previous: &[RenderedEntry], current: &[RenderedEntry]) -> (Vec<String>, usize, usize, usize) {
+    let ops = diff_entries(previous, current);
+    let prefixes = |entries: &[RenderedEntry]| entries.iter().map(|e| e.prefix.clone()).collect::<Vec<_>>();
+    let (prev, curr) = (prefixes(previous), prefixes(current));
+    let (mut changed_prev, mut changed_curr) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    let (mut i, mut j) = (0, 0);
+    for op in &ops {
+        match op {
+            DiffOp::Unchanged(_) => (i, j) = (i + 1, j + 1),
+            DiffOp::Removed(_) => {
+                changed_prev.insert(i);
+                i += 1;
+            }
+            DiffOp::Added(_) => {
+                changed_curr.insert(j);
+                j += 1;
+            }
+        }
+    }
+    let mut lines = Vec::new();
+    let mut headers = std::collections::HashSet::new();
+    let (mut added, mut removed, mut unchanged) = (0, 0, 0);
+    let (mut i, mut j) = (0, 0);
+    for op in ops {
+        let header = match &op {
+            DiffOp::Removed(_) => table_header(&prev, i).filter(|h| !changed_prev.contains(h)).map(|h| &previous[h]),
+            DiffOp::Added(_) => table_header(&curr, j).filter(|h| !changed_curr.contains(h)).map(|h| &current[h]),
+            DiffOp::Unchanged(_) => None,
+        };
+        if let Some(header) = header
+            && headers.insert(header.prefix.clone())
+        {
+            lines.push(format_diff_line(' ', header, None));
+        }
+        match op {
+            DiffOp::Unchanged(_) => {
+                unchanged += 1;
+                (i, j) = (i + 1, j + 1);
+            }
+            DiffOp::Removed(entry) => {
+                removed += 1;
+                i += 1;
+                lines.push(format_diff_line('-', &entry, None));
+            }
+            DiffOp::Added(entry) => {
+                added += 1;
+                j += 1;
+                lines.push(format_diff_line('+', &entry, entry.ref_id.as_deref()));
+            }
+        }
+    }
+    (lines, added, removed, unchanged)
+}
+
 enum Query {
     Text(String),
     Regex(regex_lite::Regex, String),
@@ -310,6 +375,7 @@ pub fn find_lines(lines: &[String], query: &str, context: Option<i64>) -> Result
         let start = index.saturating_sub(context);
         let end = (index + context).min(lines.len() - 1);
         included.extend(start..=end);
+        included.extend(table_header(lines, index));
     }
     let mut output = vec![format!("{} matching snapshot {}:", matches.len(), if matches.len() == 1 { "line" } else { "lines" })];
     let mut previous: Option<usize> = None;
@@ -321,6 +387,23 @@ pub fn find_lines(lines: &[String], query: &str, context: Option<i64>) -> Result
         previous = Some(index);
     }
     Ok(output.join("\n"))
+}
+
+/// For a table row line, the line of its table's first row: the header row, whose cells name the row's values.
+fn table_header(lines: &[String], index: usize) -> Option<usize> {
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let line = &lines[index];
+    if !line.trim_start().starts_with("- row \"") {
+        return None;
+    }
+    let depth = indent(line);
+    let table = (0..index).rev().find(|&i| indent(&lines[i]) < depth)?;
+    let table_line = lines[table].trim_start();
+    if table_line != "- table" && !table_line.starts_with("- table ") {
+        return None;
+    }
+    let first = table + 1;
+    (first < index && indent(&lines[first]) == depth && lines[first].trim_start().starts_with("- row \"")).then_some(first)
 }
 
 struct FrameNode {
@@ -358,7 +441,7 @@ fn frame_skip_note(count: usize, reason: &str) -> String {
 }
 
 fn frame_failure_note(error: &str) -> &'static str {
-    if is_context_lost(error) || error.contains("navigated or re-rendered") || error.contains("frame is gone") || error.contains("tab is gone") {
+    if error.contains("navigated or re-rendered") || error.contains("frame is gone") || error.contains("tab is gone") {
         "the frame changed while capturing"
     } else if error.contains("timed out") || error.contains("Timeout") {
         "the frame did not answer in time"
@@ -570,7 +653,7 @@ async fn capture_main(page: &Arc<TabPage>, scope: &Scope, settings: &Settings, d
                     }
                     return serde_json::from_value::<Capture>(value).map_err(|e| anyhow!("unexpected capture result: {e}"));
                 }
-                if (is_context_lost(&message) || message.contains("navigated or re-rendered")) && !diff && Instant::now() + RETRY_DELAY < deadline {
+                if (is_stale(&error) || message.contains("navigated or re-rendered")) && !diff && Instant::now() + RETRY_DELAY < deadline {
                     tokio::time::sleep(RETRY_DELAY).await;
                     continue;
                 }
@@ -590,14 +673,14 @@ async fn settle_recent_navigation(page: &Arc<TabPage>, deadline: Instant) {
     let main = page.main_frame();
     let Some(frame) = page.frame(&main) else { return };
     let recent = frame.committed_at.map(|at| at.elapsed() < Duration::from_secs(5)).unwrap_or(false);
-    if !recent || frame.lifecycle.is_empty() || frame.lifecycle.contains("networkAlmostIdle") || frame.lifecycle.contains("networkIdle") || page.dialog().is_some() {
+    if !recent || frame.lifecycle.is_empty() || frame.lifecycle.contains(&LoadState::NetworkIdle) || page.dialog().is_some() {
         return;
     }
     let left = deadline.saturating_duration_since(Instant::now());
     let cap = (left / 2).min(Duration::from_millis(1_000));
     let started = Instant::now();
     page.wait_until(cap, Duration::from_millis(100), |page| {
-        page.lifecycle_has(&main, "networkAlmostIdle") || page.lifecycle_has(&main, "networkIdle") || page.dialog().is_some()
+        page.lifecycle_has(&main, LoadState::NetworkIdle) || page.dialog().is_some()
     })
     .await;
     let quiet_max = cap.saturating_sub(started.elapsed()).max(Duration::from_millis(150)).min(Duration::from_millis(400)).as_millis() as u64;
@@ -825,7 +908,7 @@ pub async fn snapshot(page: &Arc<TabPage>, tab_state: &PageTab, options: &Option
     if !use_diff {
         let mut notes = capture.notes.clone();
         if is_pdf {
-            notes.push("- ... this tab shows Chrome's PDF viewer: the document's text is not in the page and can't be snapshotted. Use a screenshot to read it, or fetch the PDF and extract its text another way.".into());
+            notes.push("- ... this tab shows the browser's PDF viewer: the document's text is not in the page and can't be snapshotted. Use a screenshot to read it, or fetch the PDF and extract its text another way.".into());
         }
         let lines: Vec<String> = rendered.iter().map(|e| format_line(e, e.ref_id.as_deref())).collect();
         let found = match &options.find {
@@ -836,20 +919,8 @@ pub async fn snapshot(page: &Arc<TabPage>, tab_state: &PageTab, options: &Option
     }
     let previous_entries = compatible_previous.map(|p| p.entries).unwrap_or_default();
     let mut lines: Vec<String> = capture.notes.clone();
-    let (mut added, mut removed, mut unchanged) = (0, 0, 0);
-    for op in diff_entries(&previous_entries, &rendered) {
-        match op {
-            DiffOp::Unchanged(_) => unchanged += 1,
-            DiffOp::Removed(entry) => {
-                removed += 1;
-                lines.push(format_diff_line('-', &entry, None));
-            }
-            DiffOp::Added(entry) => {
-                added += 1;
-                lines.push(format_diff_line('+', &entry, entry.ref_id.as_deref()));
-            }
-        }
-    }
+    let (changes, added, removed, unchanged) = diff_lines(&previous_entries, &rendered);
+    lines.extend(changes);
     let plural = |n: usize, one: &str, many: &str| if n == 1 { one.to_string() } else { many.to_string() };
     lines.push(format!("{added} {}, {removed} {}, {unchanged} unchanged", plural(added, "addition", "additions"), plural(removed, "removal", "removals")));
     Ok(lines.join("\n"))
@@ -1100,6 +1171,8 @@ mod tests {
         .unwrap();
         let rendered = render_capture(&capture);
         assert_eq!(rendered.entries[0].prefix, "- list \"Items\"");
+        let unnamed: Capture = serde_json::from_value(json!({ "entries": [{ "depth": 0, "role": "link", "name": "link", "unnamed": true, "priority": 1 }] })).unwrap();
+        assert_eq!(render_capture(&unnamed).entries[0].prefix, "- link");
         assert_eq!(rendered.entries[1].prefix, "  - link \"One \\\"1\\\"\"");
         assert_eq!(rendered.entries[1].role.as_deref(), Some("link"));
         assert_eq!(rendered.entries[2].prefix, "    - button \"Go\"");
@@ -1117,6 +1190,32 @@ mod tests {
         assert!(ops.contains(&DiffOp::Removed(entry("- b"))));
         assert!(ops.contains(&DiffOp::Added(entry("  - d"))));
         assert_eq!(format_diff_line('+', &entry("  - d"), Some("e4")), "+   d [ref=e4]");
+    }
+
+    #[test]
+    fn table_rows_in_find_and_diff_bring_their_header_row() {
+        let table = |wins: &str| {
+            vec![
+                entry("- heading \"Teams\""),
+                entry("- table"),
+                entry("  - row \"Team | Wins\""),
+                entry("  - row \"Islanders | 25\""),
+                entry(&format!("  - row \"Rangers | {wins}\"")),
+            ]
+        };
+        let lines: Vec<String> = table("36").iter().map(|e| format_line(e, None)).collect();
+        let found = find_lines(&lines, "Rangers", Some(0)).unwrap();
+        assert_eq!(found, "1 matching snapshot line:\n...\n  - row \"Team | Wins\"\n...\n  - row \"Rangers | 36\"");
+        assert_eq!(find_lines(&lines, "Teams", Some(0)).unwrap(), "1 matching snapshot line:\n...\n- heading \"Teams\"");
+
+        let (changes, added, removed, unchanged) = diff_lines(&table("36"), &table("37"));
+        assert_eq!(changes, vec!["    row \"Team | Wins\"", "-   row \"Rangers | 36\"", "+   row \"Rangers | 37\""]);
+        assert_eq!((added, removed, unchanged), (1, 1, 4));
+        // A header row that changed itself is shown once, as a change.
+        let mut renamed = table("36");
+        renamed[2] = entry("  - row \"Club | Wins\"");
+        let (changes, ..) = diff_lines(&table("36"), &renamed);
+        assert_eq!(changes, vec!["-   row \"Team | Wins\"", "+   row \"Club | Wins\""]);
     }
 
     #[test]

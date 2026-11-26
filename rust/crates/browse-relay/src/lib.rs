@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod domain;
+pub mod firefox;
 pub mod guardrails;
 pub mod log;
 pub mod origins;
@@ -21,7 +22,9 @@ pub mod surface;
 mod browser;
 mod cdp;
 mod demonstrate;
+mod drivers;
 mod extension;
+mod handoff_card;
 mod handshake;
 mod link;
 mod presentation;
@@ -34,7 +37,7 @@ mod watchdog;
 
 pub use browser::RelayBrowser;
 pub use client::Endpoint;
-pub use relay::{AutoUpdateStatus, Relay};
+pub use relay::{AutoUpdateStatus, InstalledBrowsers, Relay};
 pub use serve::{RelayHandle, ServeOptions, call_tool, serve, serve_until, start};
 pub use tools::tools;
 pub use util::process_alive;

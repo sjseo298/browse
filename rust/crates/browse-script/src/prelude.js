@@ -212,6 +212,20 @@
   }
   const box = (arg) => (arg === undefined ? {} : { v: arg })
 
+  /** One setInputFiles entry as the upload tool takes it: a path, or { name, data } with base64 data. */
+  function uploadPayload(file) {
+    if (typeof file === "string") return file
+    const takes = "setInputFiles takes file paths, { name, buffer } with a Uint8Array or ArrayBuffer, or { name, data } with base64 data"
+    if (!file || typeof file !== "object" || typeof file.name !== "string" || !file.name) throw new Error(takes)
+    let data
+    if (typeof file.buffer === "string") throw new Error("setInputFiles: buffer must be bytes; pass base64 as data instead")
+    else if (file.buffer instanceof ArrayBuffer) data = bytesToBase64(new Uint8Array(file.buffer))
+    else if (ArrayBuffer.isView(file.buffer)) data = bytesToBase64(new Uint8Array(file.buffer.buffer, file.buffer.byteOffset, file.buffer.byteLength))
+    else if (typeof file.data === "string") data = file.data
+    else throw new Error(takes)
+    return clean({ name: file.name, data, mimeType: file.mimeType, lastModified: file.lastModified === undefined ? Date.now() : file.lastModified })
+  }
+
   // ---------------------------------------------------------------- locators
 
   const pageOf = Symbol("page")
@@ -275,10 +289,7 @@
       return result && Array.isArray(result.selected) ? result.selected : result
     }
     setInputFiles(files, options = {}) {
-      const list = (Array.isArray(files) ? files : [files]).map((file) => {
-        if (typeof file === "string") return file
-        throw new Error("setInputFiles takes file paths; write the content with files.write(name, data) first and pass the path it returns")
-      })
+      const list = (Array.isArray(files) ? files : [files]).map(uploadPayload)
       return tool("upload", this._target({ files: list, timeout: this._timeout(options) }))
     }
     async evaluate(fn, arg, options = {}) {
@@ -531,7 +542,10 @@
         await sleep(interval)
       }
     }
-    waitForEvent(event) { unsupported(`page.waitForEvent(${JSON.stringify(event)})`, "wait for what the event changes instead (page.waitForURL, locator.waitFor, browse.wait_for)") }
+    waitForEvent(event) {
+      if (event === "filechooser") unsupported(`page.waitForEvent(${JSON.stringify(event)})`, `call setInputFiles on the button that opens the chooser instead (page.locator("#attach").setInputFiles(path) or browse.upload({ selector, files }))`)
+      unsupported(`page.waitForEvent(${JSON.stringify(event)})`, "wait for what the event changes instead (page.waitForURL, locator.waitFor, browse.wait_for)")
+    }
     waitForResponse() { unsupported("page.waitForResponse", "use network.start() before the action and network.stop() after it") }
     waitForRequest() { unsupported("page.waitForRequest", "use network.start() before the action and network.stop() after it") }
 
@@ -548,6 +562,7 @@
         warn(`page.on("dialog") handlers aren't called in execute: dialogs on the tab are now ${answer}ed automatically (browse.dialog({ auto: "off" }) stops it)`)
         return this
       }
+      if (event === "filechooser") unsupported(`page.on(${JSON.stringify(event)})`, `call setInputFiles on the button that opens the chooser instead (page.locator("#attach").setInputFiles(path) or browse.upload({ selector, files }))`)
       if (event === "console" || event === "pageerror") unsupported(`page.on(${JSON.stringify(event)})`, "use pageConsole.start(), then pageConsole.read()")
       if (event === "request" || event === "response" || event === "requestfinished") unsupported(`page.on(${JSON.stringify(event)})`, "use network.start() and network.stop()")
       unsupported(`page.on(${JSON.stringify(event)})`, "events aren't available; poll for the change instead")
@@ -562,7 +577,11 @@
     async emulateMedia(options = {}) {
       await tool("emulate", this._args({ colorScheme: options.colorScheme ?? undefined, reducedMotion: options.reducedMotion ?? undefined, forcedColors: options.forcedColors ?? undefined, media: options.media === null ? "reset" : options.media }))
     }
-    async bringToFront() { warn("page.bringToFront() does nothing: browse's tabs never take focus from the user") }
+    async bringToFront() {
+      if (!this._hasTab()) return
+      try { await hostAsync("foreground", { tab: this._tab }) }
+      catch (error) { warn(`page.bringToFront(): ${error.message}`) }
+    }
     async close() {
       if (!this._hasTab()) return
       await tool("tabs", { action: "close", tab: this._tab })
@@ -639,7 +658,10 @@
     setOffline(offline) { return tool("emulate", defaultPage._args({ offline: !!offline })) },
     route() { unsupported("context.route()", "requests can't be intercepted; use network.start() to observe them") },
     on(event) { unsupported(`context.on(${JSON.stringify(event)})`, "events aren't available; list tabs with context.pages()") },
-    waitForEvent(event) { unsupported(`context.waitForEvent(${JSON.stringify(event)})`, "poll context.pages() instead") },
+    waitForEvent(event) {
+      if (event === "filechooser") unsupported(`context.waitForEvent(${JSON.stringify(event)})`, `call setInputFiles on the button that opens the chooser instead (page.locator("#attach").setInputFiles(path) or browse.upload({ selector, files }))`)
+      unsupported(`context.waitForEvent(${JSON.stringify(event)})`, "poll context.pages() instead")
+    },
     setDefaultTimeout(ms) { defaultPage._timeout = ms },
     setDefaultNavigationTimeout(ms) { defaultPage._navigationTimeout = ms },
     addInitScript() { unsupported("context.addInitScript()", "pages could see it; run page.evaluate() after navigating instead") },
@@ -720,11 +742,11 @@
     if (value && (value.ref || value.selector)) return { ref: value.ref, selector: value.selector }
     throw new TypeError("expected a locator, a selector or a ref")
   }
-  const fillInput = (targetValue, value) => tool("fill", defaultPage._args({ ...inputTarget(targetValue), value: String(value) }))
-  const fillInputs = (page, fields) => {
-    if (Array.isArray(page)) { fields = page; page = defaultPage }
+  const fillInput = (targetValue, value, options = {}) => tool("fill", defaultPage._args({ ...inputTarget(targetValue), value: String(value), force: options.force }))
+  const fillInputs = (page, fields, options = {}) => {
+    if (Array.isArray(page)) { options = fields || {}; fields = page; page = defaultPage }
     const list = fields.map((field) => clean({ ...inputTarget(field.target ?? field.locator ?? field), value: field.value === undefined ? undefined : String(field.value), checked: field.checked }))
-    return tool("fill", (page instanceof Page ? page : defaultPage)._args({ fields: list }))
+    return tool("fill", (page instanceof Page ? page : defaultPage)._args({ fields: list, force: options.force }))
   }
 
   const fileInfo = () => hostSync("files", { op: "info" })

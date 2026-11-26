@@ -84,7 +84,7 @@ pub async fn after(ctx: &ToolContext, page: &Arc<TabPage>, before: &Before, opti
         if committed {
             let main = page.main_frame();
             let remaining = options.navigation_timeout.saturating_sub(before.started.elapsed()).max(Duration::from_millis(500));
-            page.wait_until(remaining, Duration::from_millis(100), |page| page.lifecycle_has(&main, "DOMContentLoaded") || page.dialog().is_some()).await;
+            page.wait_until(remaining, Duration::from_millis(100), |page| page.lifecycle_has(&main, browse_core::LoadState::DomContentLoaded) || page.dialog().is_some()).await;
         }
     }
     describe(ctx, page, before, options).await
@@ -133,7 +133,7 @@ pub async fn describe(ctx: &ToolContext, page: &Arc<TabPage>, before: &Before, o
             }
             if info["errorPage"].as_bool() == Some(true) && info["status"].as_u64().is_none() {
                 let error = info["netError"].as_str().unwrap_or("a network error");
-                out.insert("warning".into(), json!(format!("Chrome could not load {url} ({error}) and shows its error page instead.")));
+                out.insert("warning".into(), json!(format!("The browser could not load {url} ({error}) and shows its error page instead.")));
             }
         }
     }

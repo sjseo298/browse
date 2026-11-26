@@ -48,6 +48,17 @@ pub struct ServeOptions {
     pub auto_update: Option<AutoUpdateStatus>,
     /// Test-only: the ports an unpinned relay tries.
     pub port_candidates: Option<Vec<u16>>,
+    /// Where to look for Firefox-family apps, for `nextStep`. The default looks at this computer, except in this
+    /// crate's tests and with OPENCODE_BROWSER_FIREFOX_DISCOVERY=0.
+    pub firefox: Option<crate::firefox::Discovery>,
+    /// The Chrome-family browsers here with browse enabled, to name a local browser that says it is Chrome (Helium
+    /// does, on purpose). None: the extension's word is kept.
+    pub installed: Option<crate::relay::InstalledBrowsers>,
+}
+
+fn default_firefox() -> Option<crate::firefox::Discovery> {
+    let off = matches!(std::env::var("OPENCODE_BROWSER_FIREFOX_DISCOVERY").as_deref().map(str::trim), Ok("0" | "false" | "off"));
+    (!cfg!(test) && !off).then(crate::firefox::Discovery::system)
 }
 
 impl Default for ServeOptions {
@@ -59,6 +70,8 @@ impl Default for ServeOptions {
             build_id: String::new(),
             auto_update: None,
             port_candidates: None,
+            firefox: default_firefox(),
+            installed: None,
         }
     }
 }
@@ -173,6 +186,8 @@ pub async fn start(options: ServeOptions, tools: Vec<Arc<dyn Tool>>) -> anyhow::
         version: options.version.clone(),
         build_id: options.build_id.clone(),
         auto_update: options.auto_update.clone(),
+        firefox: options.firefox.clone(),
+        installed: options.installed.clone(),
     })?;
     *relay.tools.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = tools;
     let state = RelayState { port: addr.port(), configured_port: configured, pid: std::process::id(), instance_id: relay.instance_id.clone(), started_at: relay.started_at.clone() };
@@ -197,6 +212,9 @@ pub async fn start(options: ServeOptions, tools: Vec<Arc<dyn Tool>>) -> anyhow::
     );
     crate::watchdog::spawn(&relay);
     let task = tokio::spawn(run(relay.clone(), listener));
+    // The Firefox profiles `browse firefox` connected come back by themselves while they listen.
+    let attaching = relay.clone();
+    tokio::spawn(async move { attaching.auto_attach_firefox().await });
     Ok(RelayHandle { relay, addr, task })
 }
 
@@ -233,7 +251,8 @@ async fn run(relay: Arc<Relay>, listener: TcpListener) {
         link.reject_all("Relay closed");
         link.close(1001, "Relay closed");
     }
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Direct browsers' agent tabs close and their sessions end (each step capped), alongside the links' close.
+    tokio::join!(tokio::time::sleep(Duration::from_millis(100)), relay.shutdown_drivers());
     persister.abort();
     housekeeping.abort();
     if let Some(delay) = test_shutdown_delay() {
@@ -460,7 +479,13 @@ async fn answer(relay: Arc<Relay>, peer: SocketAddr, request: &mut Request<Incom
     };
     finish(match (method.as_str(), path.as_str()) {
         ("GET", "/tools") => {
-            let specs: Vec<_> = relay.tools.read().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().map(|t| t.spec()).collect();
+            let specs: Vec<_> = relay
+                .tools
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .map(|t| t.spec())
+                .collect();
             let specs = crate::surface::tools(client.as_deref(), specs);
             json_response(StatusCode::OK, &serde_json::to_value(specs).unwrap_or_default())
         }
@@ -510,6 +535,44 @@ async fn answer(relay: Arc<Relay>, peer: SocketAddr, request: &mut Request<Incom
                 link.send_raw(&json!({ "id": 0, "method": "runtime.reload" }));
             }
             json_response(StatusCode::OK, &json!({ "reloaded": links.len() }))
+        }
+        // Direct protocol drivers: never MCP tools, only the token-holding CLI.
+        ("POST", "/drivers/connect") => {
+            let body = match parsed() {
+                Ok(body) => body,
+                Err(response) => return finish(*response),
+            };
+            let (status, value) = crate::drivers::connect(&relay, &body).await;
+            json_response(status, &value)
+        }
+        ("POST", "/drivers/disconnect") => {
+            let body = match parsed() {
+                Ok(body) => body,
+                Err(response) => return finish(*response),
+            };
+            let (status, value) = crate::drivers::disconnect(&relay, &body).await;
+            json_response(status, &value)
+        }
+        // `browse show`: the user brings a tab waiting on them to the front. Never an MCP tool; only a tab with a
+        // handoff waiting, so it gives an agent no way to take the user's focus.
+        ("POST", "/tabs/show") => {
+            let body = match parsed() {
+                Ok(body) => body,
+                Err(response) => return finish(*response),
+            };
+            let tab = match body.get("tab").filter(|value| !value.is_null()).map(browse_core::tab_argument) {
+                None => None,
+                Some(Ok(browse_core::TabArg::Id(tab))) => Some(tab),
+                Some(Ok(browse_core::TabArg::Chosen(name))) => match relay.resolve_chosen_tab(&name) {
+                    Ok(tab) => Some(tab),
+                    Err(error) => return finish(json_response(StatusCode::NOT_FOUND, &json!({ "error": format!("{error:#}") }))),
+                },
+                Some(Err(error)) => return finish(json_response(StatusCode::BAD_REQUEST, &json!({ "error": format!("{error:#}"), "code": "invalid-request" }))),
+            };
+            match relay.show_handoff_tab(tab).await {
+                Ok(shown) => json_response(StatusCode::OK, &shown),
+                Err((status, error)) => json_response(StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST), &json!({ "error": error })),
+            }
         }
         ("POST", "/shutdown") => {
             relay.stop();
@@ -641,6 +704,7 @@ pub async fn call_tool_keyed(relay: &Arc<Relay>, request: ToolCallRequest, clien
     let name = request.name.clone();
     let started = Instant::now();
     relay.inflight.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(id, InFlight { tool: name.clone(), tab, since: started });
+    let declares_output = tool.spec().output_schema.is_some();
     let task = tokio::spawn(RELAY.scope(relay.clone(), CALL.scope(id, TOOL.scope(name.clone(), CLIENT.scope(client_pid, async move { tool.call(context, arguments).await })))));
     relay.call_started(id, task.abort_handle(), client_pid, key);
     let outcome = task.await;
@@ -695,11 +759,38 @@ pub async fn call_tool_keyed(relay: &Arc<Relay>, request: ToolCallRequest, clien
         }
         warnings
     };
-    for warning in warnings {
+    for warning in &warnings {
         rlog!("tool.warning", tool = name.clone(), tabId = tab, warning = warning.chars().take(500).collect::<String>());
-        output.content.push(Content::Text { text: format!("Warning: {warning}") });
     }
+    if declares_output {
+        structure(&mut output);
+    }
+    add_warnings(&mut output, warnings);
     Ok(output)
+}
+
+/// A tool with an outputSchema returns its JSON object as structured content too: clients that read it (OpenCode's
+/// Code Mode) get the object itself instead of text, which a warning appended after it would make unparseable.
+fn structure(output: &mut ToolOutput) {
+    if output.is_error || output.structured_content.is_some() {
+        return;
+    }
+    let Some(Content::Text { text }) = output.content.first() else { return };
+    if let Ok(value @ Value::Object(_)) = serde_json::from_str::<Value>(text) {
+        output.structured_content = Some(value);
+    }
+}
+
+/// Warnings go after the output as text, and into its structured content when it has some: clients that read that
+/// would never see the text.
+fn add_warnings(output: &mut ToolOutput, warnings: Vec<String>) {
+    if warnings.is_empty() {
+        return;
+    }
+    if let Some(Value::Object(structured)) = output.structured_content.as_mut() {
+        structured.insert("warnings".into(), json!(warnings));
+    }
+    output.content.extend(warnings.into_iter().map(|warning| Content::Text { text: format!("Warning: {warning}") }));
 }
 
 /// An output this big (a large eval result, a full-page screenshot) leaves freed memory worth handing back.
@@ -739,6 +830,59 @@ pub(crate) async fn sweep_clients(relay: &Arc<Relay>) {
     }
 }
 
+/// The shortest idle time the extension's idleMinutes setting offers: no extension tab is reaped sooner. Keep in
+/// step with the options page's list (10 min, 30 min, 1 hour, never; src/status/settings.tsx).
+const SHORTEST_IDLE_SETTING: Duration = Duration::from_secs(10 * 60);
+
+/// How long an extension tab may stay idle: the browser's idleMinutes setting (None for never). A browser that
+/// can't say (an extension too old for `settings.get`) gets the relay's `fallback`; one that isn't connected gets
+/// None, since its tabs can't be closed now anyway.
+async fn extension_idle_ttl(relay: &Arc<Relay>, link_key: &str, fallback: Option<Duration>) -> Option<Duration> {
+    let link = relay.st().link(link_key).filter(|l| l.connected())?;
+    match relay.ext_link(&link, "settings.get", Value::Null).await {
+        Ok(answer) => {
+            let settings = crate::settings::from_extension(&answer).ok()?;
+            let minutes = settings.iter().find(|(k, _)| k == "idleMinutes").and_then(|(_, v)| v.parse::<u64>().ok())?;
+            (minutes > 0).then(|| Duration::from_secs(minutes * 60))
+        }
+        Err(error) if error.to_string().contains("Invalid extension command") => fallback,
+        Err(_) => None,
+    }
+}
+
+/// Tabs no call used for their idle time: an agent's closes, a lent one goes back to the user. A tab in a browser
+/// the extension drives follows that browser's idleMinutes setting, so `never` leaves it open; a directly driven tab
+/// uses `direct_ttl` (OPENCODE_BROWSER_IDLE_TAB_TTL_MS, None for never).
+pub(crate) async fn reap_idle(relay: &Arc<Relay>, direct_ttl: Option<Duration>) {
+    let shortest = direct_ttl.map_or(SHORTEST_IDLE_SETTING, |ttl| ttl.min(SHORTEST_IDLE_SETTING));
+    let mut ttls: HashMap<String, Option<Duration>> = HashMap::new();
+    let mut idle = Vec::new();
+    for candidate in relay.idle_candidates().into_iter().filter(|c| c.idle >= shortest) {
+        let ttl = if relay.is_direct_tab(candidate.tab) {
+            direct_ttl
+        } else if let Some(ttl) = ttls.get(&candidate.link_key) {
+            *ttl
+        } else {
+            let ttl = extension_idle_ttl(relay, &candidate.link_key, direct_ttl).await;
+            ttls.insert(candidate.link_key.clone(), ttl);
+            ttl
+        };
+        if ttl.is_some_and(|ttl| candidate.idle >= ttl) {
+            idle.push((candidate.tab, candidate.owner));
+        }
+    }
+    for (tab, owner) in idle {
+        rlog!("tab.reaped", tabId = tab, owner = owner.name());
+        if relay.is_direct_tab(tab) {
+            let _ = relay.close_or_release_why(tab, "idle").await;
+        } else if owner == crate::relay::Owner::User {
+            let _ = relay.detach_tab(tab, "idle").await;
+        } else if relay.ext_tab(tab, "tabs.remove", json!({})).await.is_ok() {
+            relay.remove_tab(tab, crate::tabs::Release { gone: true, ..Default::default() }, "idle");
+        }
+    }
+}
+
 /// Keepalive pings, idle tabs and calls whose client exited.
 async fn housekeeping(relay: Arc<Relay>) {
     let keepalive = std::env::var("OPENCODE_BROWSER_KEEPALIVE_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(20_000);
@@ -768,18 +912,9 @@ async fn housekeeping(relay: Arc<Relay>) {
                 });
             }
         }
-        if let Some(ttl) = relay.idle_tab_ttl.filter(|_| now - last_reap >= Duration::from_secs(60)) {
+        if now - last_reap >= Duration::from_secs(60) {
             last_reap = now;
-            // Tabs no call used for the idle TTL: an agent's closes, a lent one goes back to the user.
-            let idle: Vec<(i64, crate::relay::Owner)> = relay.idle_tabs(ttl);
-            for (tab, owner) in idle {
-                rlog!("tab.reaped", tabId = tab, owner = owner.name());
-                if owner == crate::relay::Owner::User {
-                    let _ = relay.detach_tab(tab, "idle").await;
-                } else if relay.ext_tab(tab, "tabs.remove", json!({})).await.is_ok() {
-                    relay.remove_tab(tab, crate::tabs::Release { gone: true, ..Default::default() }, "idle");
-                }
-            }
+            reap_idle(&relay, relay.idle_tab_ttl).await;
         }
         if now - last_orphans >= Duration::from_secs(5) {
             last_orphans = now;
@@ -793,5 +928,47 @@ async fn housekeeping(relay: Arc<Relay>) {
                 rlog!("relay.memory", rssMb = bytes / (1024 * 1024), tabs = tabs);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use super::*;
+
+    #[test]
+    fn json_objects_become_structured_content() {
+        let mut object = ToolOutput::text("{\"tab\": 3, \"url\": \"https://example.com/\"}");
+        structure(&mut object);
+        assert_eq!(object.structured_content, Some(json!({ "tab": 3, "url": "https://example.com/" })));
+        add_warnings(&mut object, vec!["went elsewhere".into()]);
+        assert_eq!(object.structured_content.as_ref().unwrap()["warnings"], json!(["went elsewhere"]));
+        for text in ["- button \"Go\" [ref=e1]", "[1, 2]", "\"x\""] {
+            let mut other = ToolOutput::text(text);
+            structure(&mut other);
+            assert!(other.structured_content.is_none(), "{text}");
+        }
+        let mut failed = ToolOutput::error("{\"outcome\": \"timeout\"}");
+        structure(&mut failed);
+        assert!(failed.structured_content.is_none());
+        let mut kept = ToolOutput { structured_content: Some(json!({ "value": 1 })), ..ToolOutput::text("1") };
+        structure(&mut kept);
+        assert_eq!(kept.structured_content, Some(json!({ "value": 1 })));
+    }
+
+    #[test]
+    fn warnings_reach_text_and_structured_content() {
+        let mut plain = ToolOutput::text("{}");
+        add_warnings(&mut plain, vec!["went elsewhere".into()]);
+        assert!(matches!(&plain.content[1], Content::Text { text } if text == "Warning: went elsewhere"));
+        assert!(plain.structured_content.is_none());
+
+        let mut structured = ToolOutput { structured_content: Some(json!({ "value": 1 })), ..ToolOutput::text("1") };
+        add_warnings(&mut structured, vec!["went elsewhere".into()]);
+        assert_eq!(structured.structured_content, Some(json!({ "value": 1, "warnings": ["went elsewhere"] })));
+        assert_eq!(structured.content.len(), 2);
+
+        let mut quiet = ToolOutput { structured_content: Some(json!({ "value": 1 })), ..ToolOutput::text("1") };
+        add_warnings(&mut quiet, Vec::new());
+        assert_eq!(quiet.structured_content, Some(json!({ "value": 1 })));
     }
 }

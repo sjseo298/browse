@@ -2,6 +2,7 @@ mod agents;
 mod browsers;
 mod cli;
 mod dsh;
+mod firefox;
 mod http;
 mod install;
 mod jsonc;
@@ -16,6 +17,7 @@ mod remote;
 mod serve;
 mod session;
 mod setup;
+mod show;
 mod update;
 
 pub const VERSION: &str = match option_env!("BROWSE_VERSION") {
@@ -35,8 +37,11 @@ const COMMANDS: &[&str] = &[
     "restart",
     "pair",
     "extension",
+    "firefox",
+    "disconnect",
     "update",
     "status",
+    "show",
     "runtime-switch",
     "tools",
 ];
@@ -47,7 +52,8 @@ fn asked_for_help(command: &str, args: &[String]) -> bool {
     COMMANDS.contains(&command) && args.iter().take_while(|arg| arg.as_str() != "--").any(|arg| arg == "--help" || arg == "-h")
 }
 
-const HELP: &str = "browse lets your AI agents use your real Chrome-family browser through the browse extension.
+const HELP: &str = "browse lets your AI agents use your real browser: Chrome-family browsers through the browse extension, and
+Firefox-family browsers through WebDriver BiDi.
 
 SETUP
   install                     Install browse, add it to your agents and connect the extension
@@ -62,7 +68,17 @@ SETUP
     --no-wait                 Don't wait for the extension to connect
     --wait-seconds <seconds>  How long to wait (default 180 in a terminal, 90 otherwise)
     --no-modify-path          Don't add browse to PATH
+    --firefox                 Connect a Firefox-family browser instead of the Chrome extension
   extension                   Where to get the extension
+  firefox                     Connect a Firefox-family browser directly, starting it with remote control when needed
+    --app <firefox|dev|nightly|zen|path>
+                              Which app (default: the one connected before, else the first installed)
+    --profile <name|dir>      Which profile (default: the one connected before, else the running or default one)
+    --relaunch                Restart a running Firefox with remote control; its tabs come back, private windows don't
+    --dedicated               Use a separate browse profile instead of yours
+    --headless                A dedicated profile with no window (browse disconnect quits it)
+    --url <ws://...>          Connect a WebDriver BiDi endpoint that's already listening
+  disconnect [browser]        Let a directly connected browser go; browse stops reconnecting it
   pair [--wait-seconds <s>]   Print a one-time pairing code and wait for the browser that redeems it
     --label <name>            Include a relay label in the printed 1-click Chrome add link
     --no-wait                 Print the pairing code / link and exit immediately
@@ -80,6 +96,7 @@ RUNNING
   restart                     Restart the relay with this terminal's environment; agent tabs stay open
   mcp                         The MCP server agents run (stdio)
   tools                       List the browser tools
+  show [tab] [--json]         Bring a tab waiting on you (a handoff) to the front; with no tab, the only one waiting
   <tool> [value]... [--arg value]...
                               Call a tool. `browse navigate https://example.com` opens a tab and prints its id
                               (\"tab\"); pass it to the rest: `browse snapshot --tab 12`, `browse click e12 --tab 12`,
@@ -143,8 +160,11 @@ fn main() {
         }),
         "pair" => setup::pair(rest),
         "extension" => Ok(setup::extension()),
+        "firefox" => firefox::command(rest),
+        "disconnect" => firefox::disconnect(rest),
         "update" => update::command(rest).map(|_| 0),
         "status" => setup::status(rest),
+        "show" => show::command(rest),
         // Run by the TypeScript browse's updater once it installed this build (legacy.rs).
         "runtime-switch" => legacy::runtime_switch(rest),
         "tools" => Ok(cli::list()),
@@ -190,5 +210,17 @@ mod tests {
         assert!(!asked_for_help("update", &args(&["--check"])));
         assert!(!asked_for_help("install", &args(&["--wait-seconds", "10"])));
         assert!(!asked_for_help("set", &args(&["hostname", "0.0.0.0"])));
+        assert!(!asked_for_help("firefox", &args(&["--relaunch", "--app", "zen"])));
+    }
+
+    #[test]
+    fn firefox_and_disconnect_are_commands_with_help() {
+        for command in ["firefox", "disconnect"] {
+            assert!(COMMANDS.contains(&command));
+            assert!(asked_for_help(command, &args(&["--dedicated", "--help"])), "browse {command} --help");
+            assert!(super::HELP.contains(&format!("\n  {command} ")), "{command} is in the help");
+        }
+        assert!(super::HELP.lines().next().unwrap().contains("Chrome-family"));
+        assert!(super::HELP.contains("Firefox-family"));
     }
 }

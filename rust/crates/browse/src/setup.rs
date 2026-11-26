@@ -112,9 +112,10 @@ fn mcp_cwd() -> String {
 }
 
 /// Writes (or updates) the browse MCP server so it runs `entry`, keeping settings the user added. One pooled server
-/// with a fixed cwd serves every OpenCode session; each agent works in the tabs it opens, by their ids.
-pub fn configure_opencode(file: &Path, entry: &Path) -> anyhow::Result<McpEdit> {
-    configure_opencode_with_port(file, entry, None)
+/// with a fixed cwd serves every OpenCode session; each agent works in the tabs it opens, by their ids. A pinned relay
+/// `port` goes in its environment, so the server dials the relay the extension is paired with.
+pub fn configure_opencode(file: &Path, entry: &Path, port: Option<u16>) -> anyhow::Result<McpEdit> {
+    configure_opencode_with_port(file, entry, port)
 }
 
 pub fn configure_opencode_with_port(file: &Path, entry: &Path, port: Option<u16>) -> anyhow::Result<McpEdit> {
@@ -158,6 +159,28 @@ fn can_fallback_in_place(error: &std::io::Error) -> bool {
 }
 
 pub fn write_keeping_mode(file: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    // Agent configs are often symlinks into a dotfiles repo, put there by GNU Stow or Nix Home Manager. A link is
+    // followed and its target written: staging beside the link and renaming would replace the link itself.
+    let link = std::fs::symlink_metadata(file).ok().filter(|meta| meta.file_type().is_symlink());
+    let target = match &link {
+        Some(_) => match std::fs::canonicalize(file) {
+            Ok(target) => target,
+            Err(_) => {
+                let missing = std::fs::read_link(file).unwrap_or_default();
+                bail!("{} is a link to {}, which doesn't exist; create it there, then run install again", file.display(), missing.display());
+            }
+        },
+        None => file.to_path_buf(),
+    };
+    match write_beside(&target, bytes) {
+        Ok(()) => Ok(()),
+        Err(error) if link.is_some() => bail!("{} is a link to {}, which can't be written: {error}", file.display(), target.display()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Writes `bytes` to a temporary file beside `file`, keeps `file`'s mode, and renames the temporary over it.
+fn write_beside(file: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let dir = file.parent().context("no parent folder")?;
     std::fs::create_dir_all(dir)?;
     let temporary = dir.join(format!(".{}.{}.tmp", file.file_name().unwrap_or_default().to_string_lossy(), std::process::id()));
@@ -575,19 +598,47 @@ pub fn status(args: &[String]) -> anyhow::Result<i32> {
             }
             for browser in status.get("browsers").and_then(Value::as_array).into_iter().flatten() {
                 let text = |k: &str| browser.get(k).and_then(Value::as_str).unwrap_or("?").to_owned();
-                println!("Browser:   {} ({}){}", text("name"), text("id"), if browser["default"] == true { ", default" } else { "" });
+                let default = if browser["default"] == true { ", default" } else { "" };
+                if browser["driver"] == "cdp-extension" {
+                    println!("Browser:   {} ({}){default}", text("name"), text("id"));
+                } else {
+                    println!("Browser:   {}{default}", direct_line(browser));
+                }
             }
-            let tabs = status.get("targets").and_then(Value::as_array).map_or(0, Vec::len);
-            println!("Tabs:      {tabs} (`browse status --json` or `browse tabs` for details)");
+            let tabs = status.get("targets").and_then(Value::as_array);
+            println!("Tabs:      {} (`browse status --json` or `browse tabs` for details)", tabs.map_or(0, Vec::len));
+            for target in tabs.into_iter().flatten() {
+                let Some(handoff) = target.get("handoff") else { continue };
+                let tab = target.get("tab").and_then(Value::as_i64).unwrap_or_default();
+                let url = target.get("url").and_then(Value::as_str).unwrap_or_default();
+                let message = handoff.get("message").and_then(Value::as_str).unwrap_or_default();
+                println!("Waiting:   tab {tab} ({url}) waiting on you: {message}");
+            }
         }
         None => println!("Relay:     not running at {} (it starts when an agent uses browse)", relay_api::endpoint()),
     }
     Ok(0)
 }
 
+/// A directly driven browser, as `status` shows it: `✓ Firefox 160 (firefox) · webdriver-bidi · 127.0.0.1:59834 · 2 tabs`.
+fn direct_line(browser: &Value) -> String {
+    let text = |k: &str| browser.get(k).and_then(Value::as_str).unwrap_or("?").to_owned();
+    let major = browser.get("version").and_then(Value::as_str).and_then(|v| v.split('.').next()).map(|v| format!(" {v}")).unwrap_or_default();
+    let endpoint = browser.get("endpoint").and_then(Value::as_str).map(|e| e.trim_start_matches("ws://").split('/').next().unwrap_or(e).to_owned()).unwrap_or_else(|| "?".into());
+    let tabs = browser.get("tabs").and_then(Value::as_u64).unwrap_or(0);
+    let mark = if browser["connected"] == true { "✓" } else { "!" };
+    format!("{mark} {}{major} ({}) · {} · {endpoint} · {tabs} tab{}", text("name"), text("id"), text("protocol"), if tabs == 1 { "" } else { "s" })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_direct_browser_shows_its_protocol_endpoint_and_tabs() {
+        let browser = json!({ "id": "firefox", "name": "Firefox", "driver": "webdriver-bidi", "protocol": "webdriver-bidi", "endpoint": "ws://127.0.0.1:59834/session", "version": "160.0.1", "tabs": 2, "connected": true });
+        assert_eq!(direct_line(&browser), "✓ Firefox 160 (firefox) · webdriver-bidi · 127.0.0.1:59834 · 2 tabs");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("browse-setup-{name}-{}", crate::session::random_u64()));
@@ -620,11 +671,11 @@ mod tests {
         let file = dir.join("opencode.json");
         let original = b"{ \"theme\": \"caf\xe9\" }".to_vec();
         std::fs::write(&file, &original).unwrap();
-        let error = configure_opencode(&file, Path::new("/usr/bin/browse")).err().expect("a file that isn't UTF-8 is refused");
+        let error = configure_opencode(&file, Path::new("/usr/bin/browse"), None).err().expect("a file that isn't UTF-8 is refused");
         assert!(error.to_string().contains("left unchanged"), "{error}");
         assert_eq!(std::fs::read(&file).unwrap(), original);
         let missing = dir.join("missing/opencode.json");
-        assert!(matches!(configure_opencode(&missing, Path::new("/usr/bin/browse")).unwrap(), McpEdit::Added));
+        assert!(matches!(configure_opencode(&missing, Path::new("/usr/bin/browse"), None).unwrap(), McpEdit::Added));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -632,7 +683,7 @@ mod tests {
     fn opencode_gets_one_pooled_server_with_an_absolute_home_cwd() {
         let dir = scratch("pool");
         let file = dir.join("opencode.json");
-        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse")).unwrap(), McpEdit::Added));
+        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse"), None).unwrap(), McpEdit::Added));
         let config = jsonc::parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
         let server = &config["mcp"]["servers"]["browse"];
         assert_eq!(server["type"], "local");
@@ -643,7 +694,7 @@ mod tests {
         let cwd = server["cwd"].as_str().unwrap();
         assert!(cwd != "~" && Path::new(cwd).is_absolute(), "cwd should be an absolute path: {cwd}");
         assert_eq!(server["pool"], true);
-        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse")).unwrap(), McpEdit::UpToDate));
+        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse"), None).unwrap(), McpEdit::UpToDate));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -659,12 +710,31 @@ mod tests {
             "environment": { "OPENCODE_BROWSER_RUNTIME": "auto-update" },
         } } } });
         std::fs::write(&file, serde_json::to_string_pretty(&stale).unwrap()).unwrap();
-        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse")).unwrap(), McpEdit::Updated));
+        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse"), None).unwrap(), McpEdit::Updated));
         let config = jsonc::parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
         let cwd = config["mcp"]["servers"]["browse"]["cwd"].as_str().unwrap();
         assert!(cwd != "~" && Path::new(cwd).is_absolute(), "the stale ~ is rewritten to the home directory: {cwd}");
         assert_eq!(cwd, home().display().to_string());
-        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse")).unwrap(), McpEdit::UpToDate));
+        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse"), None).unwrap(), McpEdit::UpToDate));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn opencode_environment_keeps_the_runtime_and_gains_a_pinned_port() {
+        let dir = scratch("port");
+        let file = dir.join("opencode.json");
+        std::fs::write(&file, r#"{"mcp":{"servers":{"browse":{"type":"local","command":["/usr/bin/browse","mcp"],"environment":{"MINE":"1","OPENCODE_BROWSER_RUNTIME":"auto-update"}}}}}"#).unwrap();
+        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse"), Some(20000)).unwrap(), McpEdit::Updated));
+        let config = jsonc::parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let environment = &config["mcp"]["servers"]["browse"]["environment"];
+        assert_eq!(environment["MINE"], "1");
+        assert_eq!(environment["OPENCODE_BROWSER_RUNTIME"], "auto-update");
+        assert_eq!(environment["OPENCODE_BROWSER_PORT"], "20000");
+        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse"), Some(20000)).unwrap(), McpEdit::UpToDate));
+        // An install without the variable set leaves the port an earlier one wrote.
+        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse"), None).unwrap(), McpEdit::UpToDate));
+        let config = jsonc::parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(config["mcp"]["servers"]["browse"]["environment"]["OPENCODE_BROWSER_PORT"], "20000");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -692,11 +762,75 @@ mod tests {
         let dir = scratch("bom");
         let file = dir.join("opencode.json");
         std::fs::write(&file, "\u{feff}{\n  // mine\n  \"theme\": \"x\"\n}\n").unwrap();
-        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse")).unwrap(), McpEdit::Added));
+        assert!(matches!(configure_opencode(&file, Path::new("/usr/bin/browse"), None).unwrap(), McpEdit::Added));
         let after = std::fs::read_to_string(&file).unwrap();
         assert!(after.starts_with('\u{feff}') && after.contains("// mine"), "{after}");
         assert_eq!(jsonc::parse(&after).unwrap()["mcp"]["servers"]["browse"]["command"][0], "/usr/bin/browse");
         assert_eq!(jsonc::parse(&after).unwrap()["theme"], "x");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_config_is_written_through_its_link() {
+        use std::os::unix::fs::symlink;
+
+        let dir = scratch("symlink");
+        let target = dir.join("dotfiles/opencode.json");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "{\n  // mine\n}\n").unwrap();
+        let link = dir.join("config/opencode.json");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink("../dotfiles/opencode.json", &link).unwrap();
+
+        write_keeping_mode(&link, b"{\"mcp\":{}}\n").unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link stays a link");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"mcp\":{}}\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_is_refused_and_left_alone() {
+        use std::os::unix::fs::symlink;
+
+        let dir = scratch("dangling");
+        let link = dir.join("config/mcp.json");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink("../dotfiles/missing.json", &link).unwrap();
+
+        let error = write_keeping_mode(&link, b"{}\n").expect_err("a dangling link isn't written through");
+        assert!(error.to_string().contains("doesn't exist"), "{error}");
+        assert!(!dir.join("dotfiles/missing.json").exists());
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the dangling link stays where it was");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_into_a_read_only_folder_is_refused() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = scratch("read-only");
+        let store = dir.join("nix/store/abc");
+        std::fs::create_dir_all(&store).unwrap();
+        let target = store.join("opencode.json");
+        std::fs::write(&target, "{\"mcp\":{}}\n").unwrap();
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // root writes anyway; there's nothing to check there.
+        if std::fs::write(store.join("probe"), b"").is_ok() {
+            std::fs::remove_dir_all(dir).unwrap();
+            return;
+        }
+        let link = dir.join("config/opencode.json");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let error = write_keeping_mode(&link, b"{\"theme\":\"x\"}\n").expect_err("a read-only target isn't replaced");
+        assert!(error.to_string().contains("which can't be written"), "{error}");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link survives");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"mcp\":{}}\n");
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

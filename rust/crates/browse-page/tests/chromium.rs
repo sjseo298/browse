@@ -2,7 +2,7 @@
 
 mod support;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use support::Harness;
 
 macro_rules! harness {
@@ -78,6 +78,16 @@ async fn snapshot_click_fill_and_refs() {
     // Ambiguous selectors fail with the matches.
     let error = h.err("click", json!({ "selector": "input" })).await;
     assert!(error.contains("matches 3 elements"), "{error}");
+
+    // A selector that matches nothing lists what the page has instead, with snapshot refs.
+    let missing = h.err("click", json!({ "selector": "internal:role=textbox[name=/Emial/i]", "timeout": 300 })).await;
+    assert!(missing.contains(&format!("Closest elements in the page:\n  - textbox \"Email\" [ref={email}]")), "{missing}");
+    let missing = h.err("click", json!({ "selector": "role=slider", "timeout": 300 })).await;
+    assert!(missing.ends_with("The page has no slider."), "{missing}");
+    let missing = h.err("click", json!({ "selector": "role=link[name=\"Sav\"]", "timeout": 300 })).await;
+    assert!(missing.contains("Closest elements in the page:\n  - link \"Next page\""), "{missing}");
+    let missing = h.err("click", json!({ "selector": "role=menuitem[name=\"Sav\"]", "timeout": 300 })).await;
+    assert!(missing.contains(&format!("The page has no menuitem. Elements with a similar name:\n  - button \"Save\" [ref={save}]")), "{missing}");
 
     // A link click navigates; old refs are stale.
     let next = ref_of(&again, "link \"Next page\"");
@@ -191,6 +201,74 @@ async fn snapshot_main_scope_note() {
     );
 }
 
+/// An app or game in an iframe over the page, outside <main>: a main the page switched off doesn't scope the snapshot,
+/// and an iframe left outside a scoped main is named in the note.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn snapshot_main_scope_and_iframes_outside_it() {
+    let h = harness!(false);
+    h.server.page("/game", "<!doctype html><h1>Backstab</h1><button>Shoot</button>");
+    let overlay = r#"<div style="position:fixed;inset:0"><iframe title="Backstab" src="/game" style="width:100%;height:100%;border:0"></iframe></div>"#;
+    let switched_off = h.server.page("/inert-main", &format!(r#"<!doctype html><main inert><a href="/a">01 Blackout</a></main>{overlay}"#));
+    h.ok("navigate", json!({ "url": switched_off })).await;
+    let snapshot = h.ok("snapshot", json!({})).await;
+    assert!(!snapshot.contains("scoped to <main>"), "{snapshot}");
+    assert!(snapshot.contains("iframe \"Backstab\"") && snapshot.contains("button \"Shoot\""), "{snapshot}");
+
+    let hidden = h.server.page("/hidden-main", &format!(r#"<!doctype html><main aria-hidden="true"><a href="/a">01 Blackout</a></main>{overlay}"#));
+    h.ok("navigate", json!({ "url": hidden })).await;
+    let snapshot = h.ok("snapshot", json!({})).await;
+    assert!(snapshot.contains("button \"Shoot\""), "{snapshot}");
+
+    let live = h.server.page("/live-main", &format!(r#"<!doctype html><main><a href="/a">01 Blackout</a></main>{overlay}"#));
+    h.ok("navigate", json!({ "url": live })).await;
+    let snapshot = h.ok("snapshot", json!({})).await;
+    assert!(
+        snapshot.starts_with("scoped to <main>; 1 iframe outside it is not shown (within: \"body\" to include them)\n"),
+        "{snapshot}"
+    );
+    let whole = h.ok("snapshot", json!({ "within": "body" })).await;
+    assert!(whole.contains("button \"Shoot\""), "{whole}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn table_rows_name_their_columns_once() {
+    let h = harness!(false);
+    let table = |id: &str, head: &str| format!("<table id={id}><thead{head}><tr><th>Team</th><th>Wins</th></tr></thead><tbody><tr id={id}-a><td>Islanders</td><td>25</td></tr><tr><td>Rangers</td><td>36</td></tr></tbody></table>");
+    let page = format!("<!doctype html><title>Teams</title>{}{}<button id=win onclick=\"document.querySelector('#shown tr:last-child td:last-child').textContent='37'\">Win</button>", table("shown", ""), table("hidden", " style=\"display:none\""));
+    let url = h.server.page("/teams", &page);
+    h.json("navigate", json!({ "url": url })).await;
+
+    let snapshot = h.ok("snapshot", json!({})).await;
+    assert!(snapshot.contains("- row \"Team | Wins\"\n  - row \"Islanders | 25\"\n  - row \"Rangers | 36\""), "{snapshot}");
+    // A hidden header row doesn't print, so its table's rows keep the column names.
+    assert!(snapshot.contains("- row \"Team: Islanders | Wins: 25\""), "{snapshot}");
+    let row = h.ok("snapshot", json!({ "within": "#shown-a" })).await;
+    assert!(row.contains("Team: Islanders | Wins: 25"), "{row}");
+
+    let found = h.ok("snapshot", json!({ "find": "Rangers", "context": 0 })).await;
+    assert!(found.contains("- row \"Team | Wins\"\n...\n  - row \"Rangers | 36\""), "{found}");
+
+    h.ok("snapshot", json!({})).await;
+    h.ok("click", json!({ "selector": "#win" })).await;
+    let diff = h.ok("snapshot", json!({ "diff": true })).await;
+    assert!(diff.contains("    row \"Team | Wins\"\n-   row \"Rangers | 36\"\n+   row \"Rangers | 37\""), "{diff}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn elements_without_a_name_show_none() {
+    let h = harness!(false);
+    let url = h.server.page("/unnamed", "<!doctype html><title>Unnamed</title><button onclick=\"this.textContent='Saved'\"></button><input name=q><ul><li>One</li><li>Two</li></ul>");
+    h.json("navigate", json!({ "url": url })).await;
+    let snapshot = h.ok("snapshot", json!({})).await;
+    let button = ref_of(&snapshot, "- button [");
+    assert!(snapshot.contains("- textbox \"q\" [ref="), "a name attribute still names it: {snapshot}");
+    assert!(snapshot.contains("- list [2 items]"), "{snapshot}");
+    assert!(!snapshot.contains("\"button\"") && !snapshot.contains("\"List\""), "{snapshot}");
+    // The ref works the same without a name.
+    h.ok("click", json!({ "ref": button })).await;
+    assert!(h.ok("snapshot", json!({})).await.contains("- button \"Saved\""));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refs_carry_through_find_snapshots() {
     let h = harness!(false);
@@ -232,6 +310,30 @@ async fn stealth_isolated_world_and_main_world() {
     assert_eq!(with_el, "\"Go!\"");
 }
 
+/// eval's value comes back as structured content too, so clients that read it get the value, not JSON text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eval_returns_its_value_as_structured_content() {
+    let h = harness!(false);
+    let url = h.server.page("/v", "<!doctype html><title>Values</title>");
+    h.ok("navigate", json!({ "url": url })).await;
+    let structured = |output: browse_core::ToolOutput| output.structured_content.unwrap_or_default();
+    let title = h.call("eval", json!({ "expression": "document.title" })).await;
+    assert_eq!(support::text_of(&title), "\"Values\"", "the text stays JSON");
+    assert_eq!(structured(title), json!({ "value": "Values" }));
+    assert_eq!(structured(h.call("eval", json!({ "expression": "1 + 1" })).await), json!({ "value": 2 }));
+    assert_eq!(structured(h.call("eval", json!({ "expression": "JSON.stringify([1])" })).await), json!({ "value": "[1]" }));
+    assert_eq!(structured(h.call("eval", json!({ "expression": "({ a: [1] })" })).await), json!({ "value": { "a": [1] } }));
+    assert_eq!(structured(h.call("eval", json!({ "expression": "undefined" })).await), json!({ "value": null }));
+    let nothing = structured(h.call("eval", json!({ "expression": "const t = document.title;" })).await);
+    assert_eq!(nothing["value"], serde_json::Value::Null);
+    assert!(nothing["hint"].as_str().unwrap_or_default().contains("return"), "{nothing}");
+    let big = structured(h.call("eval", json!({ "expression": "'x'.repeat(200000)" })).await);
+    assert_eq!(big["value"], serde_json::Value::Null);
+    assert!(big["truncated"].as_str().unwrap_or_default().contains("characters"), "{big}");
+    let failed = h.call("eval", json!({ "expression": "null.x" })).await;
+    assert!(failed.is_error && failed.structured_content.is_none());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn covered_elements_fail_fast_and_dialogs_pause() {
     let h = harness!(false);
@@ -249,6 +351,7 @@ async fn covered_elements_fail_fast_and_dialogs_pause() {
 
     let clicked = h.json("click", json!({ "selector": "#alert" })).await;
     assert_eq!(clicked["dialog"]["type"], "confirm", "{clicked}");
+    assert!(clicked["clicked"].as_str().is_some_and(|label| label.contains("button \"Ask\"")), "{clicked}");
     let blocked = h.err("snapshot", json!({})).await;
     assert!(blocked.contains("dialog is open"), "{blocked}");
     let status = h.json("dialog", json!({})).await;
@@ -260,6 +363,112 @@ async fn covered_elements_fail_fast_and_dialogs_pause() {
     h.ok("click", json!({ "selector": "#alert" })).await;
     let title = h.ok("eval", json!({ "expression": "document.title" })).await;
     assert_eq!(title, "\"false\"");
+}
+
+/// A dialog browse answers itself doesn't stop the rest of an input action: the keys after the one that opened
+/// it are still typed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_auto_answered_dialog_does_not_stop_typing() {
+    let h = harness!(false);
+    let url = h.server.page(
+        "/auto-dialog-typing",
+        r#"<!doctype html><title>Typing</title>
+<input id="field" onkeydown="if (event.key === 'b' && !window.asked) { window.asked = true; document.title = String(confirm('Proceed?')) }">"#,
+    );
+    h.ok("navigate", json!({ "url": url })).await;
+    h.ok("dialog", json!({ "auto": "accept" })).await;
+    let typed = h.json("type", json!({ "selector": "#field", "text": "abcde" })).await;
+    let value = h.ok("eval", json!({ "expression": "document.getElementById('field').value" })).await;
+    assert_eq!(value, "\"abcde\"", "{typed}");
+    assert_eq!(typed["typed"], 5, "{typed}");
+}
+
+/// fill checks what a click checks on text fields: one under an overlay fails without force and is left untouched,
+/// and a fields list stops at the covered one, keeping what it already filled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fill_fails_when_something_covers_the_field() {
+    let h = harness!(false);
+    let url = h.server.page(
+        "/covered-form",
+        r#"<!doctype html><style>
+#first, #name { position: absolute; left: 10px; width: 200px }
+#first { top: 10px }
+#name { top: 160px }
+#overlay { position: fixed; left: 0; top: 100px; width: 100%; height: 300px; background: rgba(0,0,0,.3) }
+</style>
+<input id="first"><input id="name">
+<div id="overlay"></div>"#,
+    );
+    h.ok("navigate", json!({ "url": url })).await;
+
+    let error = h.err("fill", json!({ "selector": "#name", "value": "x" })).await;
+    assert!(error.contains("div id=\"overlay\""), "{error}");
+    assert!(error.contains("force: true"), "{error}");
+    let value = h.ok("eval", json!({ "expression": "document.getElementById('name').value" })).await;
+    assert_eq!(value, "\"\"", "a covered field is left empty");
+
+    // Each field is filled in order: the ones before the covered one keep their value.
+    let error = h.err("fill", json!({ "fields": [ { "selector": "#first", "value": "one" }, { "selector": "#name", "value": "two" } ] })).await;
+    assert!(error.contains("div id=\"overlay\""), "{error}");
+    assert!(error.contains("Filled") && error.contains("then"), "{error}");
+    let value = h.ok("eval", json!({ "expression": "document.getElementById('first').value" })).await;
+    assert_eq!(value, "\"one\"", "the field before the covered one was filled");
+    let value = h.ok("eval", json!({ "expression": "document.getElementById('name').value" })).await;
+    assert_eq!(value, "\"\"", "the covered field is left empty");
+
+    h.ok("fill", json!({ "selector": "#name", "value": "x", "force": true })).await;
+    let value = h.ok("eval", json!({ "expression": "document.getElementById('name').value" })).await;
+    assert_eq!(value, "\"x\"");
+
+    // A floating label over its own field is not a cover: clicking it focuses the field, so both work.
+    let url = h.server.page(
+        "/floating-label",
+        r#"<!doctype html><style>
+input { position: absolute; left: 20px; top: 20px; width: 200px; height: 40px }
+label { position: absolute; left: 100px; top: 30px; width: 60px; height: 20px; z-index: 2; background: #fff }
+</style>
+<label for="city">City</label><input id="city">"#,
+    );
+    h.ok("navigate", json!({ "url": url })).await;
+    h.ok("fill", json!({ "selector": "#city", "value": "Paris" })).await;
+    let value = h.ok("eval", json!({ "expression": "document.getElementById('city').value" })).await;
+    assert_eq!(value, "\"Paris\"");
+    h.ok("click", json!({ "selector": "#city" })).await;
+    let focused = h.ok("eval", json!({ "expression": "document.activeElement.id" })).await;
+    assert_eq!(focused, "\"city\"");
+}
+
+/// Native <select>s are often hidden under custom dropdowns (Select2 and the like) and driven by setting their
+/// value, so fill and select set them without checking what is on top.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hidden_or_covered_selects_are_still_set() {
+    let h = harness!(false);
+    let url = h.server.page(
+        "/styled-selects",
+        r#"<!doctype html><style>
+.select2 { position: relative; display: inline-block }
+.select2 select { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; clip: rect(0 0 0 0); overflow: hidden }
+.select2 span { display: block; padding: 4px 8px; border: 1px solid #ccc; background: #fff }
+.covered { position: relative; width: 120px; height: 30px }
+.covered button { position: absolute; inset: 0; width: 120px; height: 30px; z-index: 2 }
+.covered select { opacity: 0; width: 120px; height: 30px }
+</style>
+<label class="select2"><span>Free</span><select id="custom"><option value="free">Free</option><option value="pro">Pro</option></select></label>
+<div class="covered"><button type="button">Choose</button><select id="invisible"><option value="free">Free</option><option value="pro">Pro</option></select></div>
+<select id="none" style="display:none"><option value="free">Free</option><option value="pro">Pro</option></select>"#,
+    );
+    h.ok("navigate", json!({ "url": url })).await;
+
+    let started = std::time::Instant::now();
+    for id in ["custom", "invisible", "none"] {
+        h.ok("fill", json!({ "selector": format!("#{id}"), "value": "Pro" })).await;
+        let value = h.ok("eval", json!({ "expression": format!("document.getElementById('{id}').value") })).await;
+        assert_eq!(value, "\"pro\"", "fill sets #{id}");
+        h.ok("select", json!({ "selector": format!("#{id}"), "values": ["Free"] })).await;
+        let value = h.ok("eval", json!({ "expression": format!("document.getElementById('{id}').value") })).await;
+        assert_eq!(value, "\"free\"", "select sets #{id}");
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "hidden selects are set without waiting; took {:?}", started.elapsed());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -297,6 +506,7 @@ async fn iframes_same_and_cross_origin() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fill_uploads_keys_scroll_and_waits() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
     let h = harness!(true);
     let url = h.server.page(
         "/misc",
@@ -305,6 +515,7 @@ async fn fill_uploads_keys_scroll_and_waits() {
 <div style="height:3000px"></div><button id="far" onclick="setTimeout(() => { const p = document.createElement('p'); p.textContent = 'Loaded later'; document.body.append(p) }, 300)">Far away</button>"#,
     );
     h.ok("navigate", json!({ "url": url })).await;
+    h.ok("eval", json!({ "expression": "window.uploadChanges = []; document.getElementById('file').addEventListener('change', (event) => window.uploadChanges.push(event.isTrusted))" })).await;
     h.ok("fill", json!({ "selector": "#pw", "value": "pw-123" })).await;
     let value = h.ok("eval", json!({ "expression": "document.getElementById('pw').value" })).await;
     assert_eq!(value, "\"pw-123\"");
@@ -315,8 +526,21 @@ async fn fill_uploads_keys_scroll_and_waits() {
     std::fs::write(&file, "hello").unwrap();
     let uploaded = h.json("upload", json!({ "selector": "#file", "files": [file.display().to_string()] })).await;
     assert_eq!(uploaded["files"][0], "upload.txt");
+    assert_eq!(uploaded["via"], "paths", "{uploaded}");
     let names = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].name" })).await;
     assert_eq!(names, "\"upload.txt\"");
+    let size = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].size" })).await;
+    assert_eq!(size, "5");
+    let changes = h.ok("eval", json!({ "expression": "window.uploadChanges" })).await;
+    assert_eq!(changes, "[true]", "one trusted change event");
+    let prefix = format!("browse-upload-probe-{}-", std::process::id());
+    let leftovers: Vec<String> = std::fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with(&prefix))
+        .collect();
+    assert!(leftovers.is_empty(), "the sentinel folders were removed: {leftovers:?}");
     h.err("upload", json!({ "selector": "#file", "files": ["/etc/passwd"] })).await;
 
     h.ok("type", json!({ "selector": "#q", "text": "rust lang", "submit": true })).await;
@@ -353,6 +577,400 @@ async fn fill_uploads_keys_scroll_and_waits() {
     assert_eq!(h.ok("eval", json!({ "expression": fetch })).await, "\"online\"");
     let flag = h.state.inner().lock().await.get("browse.network.offline").and_then(|v| v.downcast_ref::<bool>()).copied();
     assert_eq!(flag, Some(false));
+}
+
+/// The session and value of every `Page.setInterceptFileChooserDialog`, in order.
+fn chooser_calls(calls: &[(String, String, Value)]) -> Vec<(String, bool)> {
+    calls
+        .iter()
+        .filter(|(method, _, _)| method == "Page.setInterceptFileChooserDialog")
+        .map(|(_, session, params)| (session.clone(), params["enabled"].as_bool().unwrap_or(false)))
+        .collect()
+}
+
+fn chooser_states(calls: &[(String, String, Value)]) -> Vec<bool> {
+    chooser_calls(calls).into_iter().map(|(_, enabled)| enabled).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_clicks_a_button_that_opens_a_file_chooser() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page(
+        "/chooser",
+        r#"<!doctype html><button id="attach" onclick="document.getElementById('file').click()">Attach a file</button>
+<input id="file" type="file" style="display:none">"#,
+    );
+    h.ok("navigate", json!({ "url": url })).await;
+    h.ok("eval", json!({ "expression": "window.uploadChanges = 0; window.uploadTrusted = null; document.getElementById('file').addEventListener('change', (event) => { window.uploadChanges += 1; window.uploadTrusted = event.isTrusted })" })).await;
+    let file = h.files.0.join("chooser.txt");
+    std::fs::write(&file, "through the chooser").unwrap();
+
+    let uploaded = h
+        .json(
+            "upload",
+            json!({ "selector": "#attach", "files": [file.display().to_string()] }),
+        )
+        .await;
+    assert_eq!(uploaded["files"][0], "chooser.txt");
+    assert_eq!(uploaded["via"], "paths", "{uploaded}");
+    assert_eq!(
+        h.ok(
+            "eval",
+            json!({ "expression": "document.getElementById('file').files[0].name" })
+        )
+        .await,
+        "\"chooser.txt\""
+    );
+    assert_eq!(
+        h.ok(
+            "eval",
+            json!({ "expression": "document.getElementById('file').files[0].text()" })
+        )
+        .await,
+        "\"through the chooser\""
+    );
+    assert_eq!(
+        h.ok("eval", json!({ "expression": "window.uploadChanges" }))
+            .await,
+        "1"
+    );
+    assert_eq!(
+        h.ok("eval", json!({ "expression": "window.uploadTrusted" }))
+            .await,
+        "true",
+        "the change event is trusted"
+    );
+    assert_eq!(
+        chooser_states(&h.tab.calls()),
+        vec![true, false],
+        "interception is enabled before the click and disabled after"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_clicks_a_button_that_creates_the_input_while_clicking() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page(
+        "/chooser-dynamic",
+        r#"<!doctype html><button id="attach" onclick="const input = document.createElement('input'); input.type = 'file'; input.addEventListener('change', (event) => { document.body.dataset.name = input.files[0].name; document.body.dataset.trusted = event.isTrusted }); document.body.append(input); input.click()">Attach</button>"#,
+    );
+    h.ok("navigate", json!({ "url": url })).await;
+    let file = h.files.0.join("dynamic.txt");
+    std::fs::write(&file, "made while clicking").unwrap();
+
+    let uploaded = h
+        .json(
+            "upload",
+            json!({ "selector": "#attach", "files": [file.display().to_string()] }),
+        )
+        .await;
+    assert_eq!(uploaded["files"][0], "dynamic.txt", "{uploaded}");
+    assert_eq!(h.ok("eval", json!({ "expression": "document.body.dataset.name" })).await, "\"dynamic.txt\"");
+    assert_eq!(h.ok("eval", json!({ "expression": "document.body.dataset.trusted" })).await, "\"true\"");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_reports_a_button_that_opens_no_file_chooser() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page("/chooser-none", r#"<!doctype html><button id="plain" onclick="document.title = 'clicked'">Nothing</button>"#);
+    h.ok("navigate", json!({ "url": url })).await;
+    let file = h.files.0.join("unused.txt");
+    std::fs::write(&file, "never uploaded").unwrap();
+
+    let error = h
+        .err(
+            "upload",
+            json!({ "selector": "#plain", "files": [file.display().to_string()], "timeout": 1000 }),
+        )
+        .await;
+    assert!(
+        error.contains("clicked") && error.contains("it isn't a file input or its label") && error.contains("opened no file chooser"),
+        "{error}"
+    );
+    assert_eq!(
+        chooser_states(&h.tab.calls()),
+        vec![true, false],
+        "interception is disabled after the error"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_by_button_respects_multiple_and_disarms_on_failure() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page(
+        "/chooser-multiple",
+        r#"<!doctype html><button id="attach" onclick="document.getElementById('file').click()">Attach</button><input id="file" type="file">"#,
+    );
+    h.ok("navigate", json!({ "url": url })).await;
+    let one = h.files.0.join("one.txt");
+    let two = h.files.0.join("two.txt");
+    std::fs::write(&one, "one").unwrap();
+    std::fs::write(&two, "two").unwrap();
+
+    let error = h
+        .err(
+            "upload",
+            json!({ "selector": "#attach", "files": [one.display().to_string(), two.display().to_string()] }),
+        )
+        .await;
+    assert!(error.contains("takes a single file"), "{error}");
+    assert_eq!(chooser_states(&h.tab.calls()), vec![true, false], "interception is disabled after the failure");
+    assert_eq!(h.ok("eval", json!({ "expression": "document.getElementById('file').files.length" })).await, "0");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_file_chooser_disarm_leaves_a_newer_arm_alone() {
+    let h = harness!(false);
+    let driver = h.ctx.browser.tab_driver(1).await.unwrap();
+    let first = driver.prepare_file_chooser_interception();
+    driver.arm_file_chooser_interception(first).await.unwrap();
+    let second = driver.prepare_file_chooser_interception();
+    driver.arm_file_chooser_interception(second).await.unwrap();
+
+    // A delayed disable from the first upload must not turn off the second arm.
+    driver.disarm_file_chooser_interception(first).await;
+    assert_eq!(chooser_states(&h.tab.calls()), vec![true, true]);
+    driver.disarm_file_chooser_interception(second).await;
+    assert_eq!(chooser_states(&h.tab.calls()), vec![true, true, false]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_chooser_from_a_previous_document_is_stale() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page(
+        "/chooser-stale",
+        r#"<!doctype html><button id="attach" onclick="document.getElementById('file').click()">Attach</button><input id="file" type="file">"#,
+    );
+    h.server.page("/chooser-next", "<!doctype html><title>Next</title>");
+    h.ok("navigate", json!({ "url": url })).await;
+
+    let driver = h.ctx.browser.tab_driver(1).await.unwrap();
+    let arm = driver.prepare_file_chooser_interception();
+    driver.arm_file_chooser_interception(arm).await.unwrap();
+    h.ok("click", json!({ "selector": "#attach" })).await;
+    h.ok("navigate", json!({ "url": h.server.page("/nowhere", "") })).await;
+    let result = driver.take_file_chooser(std::time::Duration::from_secs(1)).await;
+    assert!(matches!(&result, Err(browse_core::DriverError::Stale)), "{result:?}");
+    driver.disarm_file_chooser_interception(arm).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_clicks_into_a_cross_origin_iframe() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let inner = h.server.other_origin("/chooser-inner");
+    h.server.page(
+        "/chooser-inner",
+        r#"<!doctype html><button id="attach" onclick="document.getElementById('file').click()">Attach</button>
+<input id="file" type="file" onchange="document.body.dataset.changes = (Number(document.body.dataset.changes) || 0) + 1">"#,
+    );
+    let url = h.server.page("/chooser-outer", &format!(r#"<!doctype html><iframe title="Cross" src="{inner}" style="width:400px;height:300px"></iframe>"#));
+    h.ok("navigate", json!({ "url": url })).await;
+    h.ok("wait_for", json!({ "selector": "iframe[title=Cross]" }))
+        .await;
+    let file = h.files.0.join("frame.txt");
+    std::fs::write(&file, "inside the frame").unwrap();
+
+    let uploaded = h.json("upload", json!({ "selector": "iframe[title=Cross] >> frame >> #attach", "files": [file.display().to_string()] })).await;
+    assert_eq!(uploaded["files"][0], "frame.txt", "{uploaded}");
+    let name = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].name", "frame": "iframe[title=Cross]" })).await;
+    assert_eq!(name, "\"frame.txt\"");
+    let changes = h.ok("eval", json!({ "expression": "document.body.dataset.changes", "frame": "iframe[title=Cross]" })).await;
+    assert_eq!(changes, "\"1\"");
+    let calls = chooser_calls(&h.tab.calls());
+    let sessions: std::collections::HashSet<&str> = calls.iter().map(|(session, _)| session.as_str()).collect();
+    assert_eq!(sessions.len(), 2, "the root and the cross-origin child session were armed: {calls:?}");
+    for session in sessions {
+        let states: Vec<bool> = calls.iter().filter(|(call_session, _)| call_session == session).map(|(_, enabled)| *enabled).collect();
+        assert_eq!(states, vec![true, false], "session {session} was armed then disarmed: {calls:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_copies_files_when_the_browser_is_elsewhere() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = match Harness::start_elsewhere(false).await {
+        Some(h) => h,
+        None => {
+            eprintln!("no Chromium found; skipping");
+            return;
+        }
+    };
+    let url = h.server.page("/upload-copy", r#"<!doctype html><input id="file" type="file" multiple>"#);
+    h.ok("navigate", json!({ "url": url })).await;
+    let file = h.files.0.join("copied.txt");
+    std::fs::write(&file, "copied bytes").unwrap();
+    let uploaded = h.json("upload", json!({ "selector": "#file", "files": [file.display().to_string()] })).await;
+    assert_eq!(uploaded["via"], "copy", "{uploaded}");
+    let name = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].name" })).await;
+    assert_eq!(name, "\"copied.txt\"");
+    let content = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].text()" })).await;
+    assert_eq!(content, "\"copied bytes\"");
+    assert!(!h.tab.methods().iter().any(|m| m == "DOM.setFileInputFiles"), "{:?}", h.tab.methods());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_accepts_inline_files_and_mixes_them_with_paths() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page("/upload-inline", r#"<!doctype html><input id="file" type="file" multiple>"#);
+    h.ok("navigate", json!({ "url": url })).await;
+    let local = h.files.0.join("local.txt");
+    std::fs::write(&local, "local bytes").unwrap();
+    // Inline bytes always copy in, even with the browser on this machine, and a mix with paths copies those too.
+    let uploaded = h.json(
+        "upload",
+        json!({
+            "selector": "#file",
+            "files": [
+                { "name": "notes.txt", "data": "aGVsbG8gaW5saW5l", "mimeType": "text/plain", "lastModified": 1_700_000_000_000u64 },
+                { "name": "extra.json", "data": "e30=" },
+                local.display().to_string(),
+            ],
+        }),
+    )
+    .await;
+    assert_eq!(uploaded["via"], "copy", "{uploaded}");
+    assert_eq!(uploaded["files"], json!(["notes.txt", "extra.json", "local.txt"]));
+    assert!(!h.tab.methods().iter().any(|m| m == "DOM.setFileInputFiles"), "{:?}", h.tab.methods());
+    let read = h
+        .ok(
+            "eval",
+            json!({ "expression": "Promise.all(Array.from(document.getElementById('file').files).map(async (file) => ({ name: file.name, size: file.size, type: file.type, lastModified: file.lastModified, content: await file.text() })))" }),
+        )
+        .await;
+    let files: serde_json::Value = serde_json::from_str(&read).unwrap();
+    assert_eq!(files[0]["name"], "notes.txt");
+    assert_eq!(files[0]["size"], 12);
+    assert_eq!(files[0]["type"], "text/plain");
+    assert_eq!(files[0]["lastModified"], 1_700_000_000_000u64);
+    assert_eq!(files[0]["content"], "hello inline");
+    // Without mimeType the name's extension picks it, like the paths route.
+    assert_eq!(files[1]["name"], "extra.json");
+    assert_eq!(files[1]["size"], 2);
+    assert_eq!(files[1]["type"], "application/json");
+    assert_eq!(files[1]["content"], "{}");
+    // No lastModified given: browse stamps it now rather than 1970.
+    assert!(files[1]["lastModified"].as_u64().unwrap() > 1_704_067_200_000, "{}", files[1]);
+    assert_eq!(files[2]["name"], "local.txt");
+    assert_eq!(files[2]["content"], "local bytes");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_accepts_a_single_inline_object_and_an_empty_file() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page("/upload-inline-single", r#"<!doctype html><input id="file" type="file" multiple>"#);
+    h.ok("navigate", json!({ "url": url })).await;
+    // files may be one inline object, not only an array of them.
+    let uploaded = h.json("upload", json!({ "selector": "#file", "files": { "name": "one.txt", "data": "aGVsbG8=" } })).await;
+    assert_eq!(uploaded["via"], "copy", "{uploaded}");
+    assert_eq!(uploaded["files"], json!(["one.txt"]));
+    assert!(!h.tab.methods().iter().any(|m| m == "DOM.setFileInputFiles"), "{:?}", h.tab.methods());
+    let content = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].text()" })).await;
+    assert_eq!(content, "\"hello\"");
+
+    let uploaded = h.json("upload", json!({ "selector": "#file", "files": { "name": "empty.txt", "data": "" } })).await;
+    assert_eq!(uploaded["files"], json!(["empty.txt"]));
+    let size = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].size" })).await;
+    assert_eq!(size, "0");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_falls_back_to_copy_when_the_browser_refuses_paths() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page("/upload-refused", r#"<!doctype html><input id="file" type="file" multiple>"#);
+    h.ok("navigate", json!({ "url": url })).await;
+    // An extension without "Allow access to file URLs" answers DOM.setFileInputFiles with a CDP error.
+    h.tab.refuse("DOM.setFileInputFiles");
+    let file = h.files.0.join("refused.txt");
+    std::fs::write(&file, "read anyway").unwrap();
+    let uploaded = h.json("upload", json!({ "selector": "#file", "files": [file.display().to_string()] })).await;
+    assert_eq!(uploaded["via"], "copy", "{uploaded}");
+    assert!(h.tab.methods().iter().any(|m| m == "DOM.setFileInputFiles"), "{:?}", h.tab.methods());
+    let content = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].text()" })).await;
+    assert_eq!(content, "\"read anyway\"");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_falls_back_to_copy_when_the_browser_sees_other_files() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page("/upload-mismatch", r#"<!doctype html><input id="file" type="file" multiple>"#);
+    h.ok("navigate", json!({ "url": url })).await;
+    h.ok("eval", json!({ "expression": "window.uploadChanges = 0; document.getElementById('file').addEventListener('change', () => window.uploadChanges++)" })).await;
+    // A browser on another filesystem resolves the sentinel and the real paths to a missing file: the probe sees
+    // different bytes and sizes, so browse copies instead.
+    h.tab.rewrite_files_to(&h.files.0.join("missing.txt").display().to_string());
+    let file = h.files.0.join("here.txt");
+    std::fs::write(&file, "real bytes").unwrap();
+    let uploaded = h.json("upload", json!({ "selector": "#file", "files": [file.display().to_string()] })).await;
+    assert_eq!(uploaded["via"], "copy", "{uploaded}");
+    assert_eq!(h.ok("eval", json!({ "expression": "window.uploadChanges" })).await, "1");
+    let content = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].text()" })).await;
+    assert_eq!(content, "\"real bytes\"");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_falls_back_to_copy_when_the_probe_sees_another_file() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page("/upload-other-file", r#"<!doctype html><input id="file" type="file" multiple>"#);
+    h.ok("navigate", json!({ "url": url })).await;
+    h.ok("eval", json!({ "expression": "window.uploadChanges = 0; document.getElementById('file').addEventListener('change', () => window.uploadChanges++)" })).await;
+    let real = h.files.0.join("real.txt");
+    let other = h.files.0.join("other.txt");
+    std::fs::write(&real, "the real bytes").unwrap();
+    std::fs::write(&other, "a different file").unwrap();
+    // The sentinel reads correctly, but the real path resolves to another file: size and mtime differ.
+    h.tab.rewrite_files_except_sentinel_to(&other.display().to_string());
+    let uploaded = h.json("upload", json!({ "selector": "#file", "files": [real.display().to_string()] })).await;
+    assert_eq!(uploaded["via"], "copy", "{uploaded}");
+    assert_eq!(h.ok("eval", json!({ "expression": "window.uploadChanges" })).await, "1");
+    let content = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].text()" })).await;
+    assert_eq!(content, "\"the real bytes\"");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_copies_files_from_a_group_writable_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page("/upload-group-writable", r#"<!doctype html><input id="file" type="file" multiple>"#);
+    h.ok("navigate", json!({ "url": url })).await;
+    // check_upload skips the file root itself, so a file directly in it is accepted; private_for_paths still refuses
+    // the group-writable folder, and the upload copies instead of handing Chrome a path it may reopen.
+    std::fs::set_permissions(&h.files.0, std::fs::Permissions::from_mode(0o775)).unwrap();
+    let file = h.files.0.join("group.txt");
+    std::fs::write(&file, "group bytes").unwrap();
+    let uploaded = h.json("upload", json!({ "selector": "#file", "files": [file.display().to_string()] })).await;
+    assert_eq!(uploaded["via"], "copy", "{uploaded}");
+    let content = h.ok("eval", json!({ "expression": "document.getElementById('file').files[0].text()" })).await;
+    assert_eq!(content, "\"group bytes\"");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_paths_refuses_two_files_without_multiple() {
+    let _upload = support::UPLOAD_LOCK.lock().await;
+    let h = harness!(false);
+    let url = h.server.page("/upload-single", r#"<!doctype html><input id="file" type="file">"#);
+    h.ok("navigate", json!({ "url": url })).await;
+    h.ok("eval", json!({ "expression": "window.uploadChanges = 0; document.getElementById('file').addEventListener('change', () => window.uploadChanges++)" })).await;
+    let one = h.files.0.join("one.txt");
+    let two = h.files.0.join("two.txt");
+    std::fs::write(&one, "one").unwrap();
+    std::fs::write(&two, "two").unwrap();
+    let refused = h.err("upload", json!({ "selector": "#file", "files": [one.display().to_string(), two.display().to_string()] })).await;
+    assert!(refused.contains("takes a single file") && refused.contains("multiple"), "{refused}");
+    assert_eq!(h.ok("eval", json!({ "expression": "document.getElementById('file').files.length" })).await, "0");
+    assert_eq!(h.ok("eval", json!({ "expression": "window.uploadChanges" })).await, "0");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -621,6 +1239,8 @@ async fn read_only_tabs_refuse_input_tools() {
     let refused = h.err("fill", json!({ "selector": "#start", "value": "2026-01-02" })).await;
     assert!(refused.contains("browse blocked fill") && refused.contains("read-only"), "{refused}");
     let refused = h.err("upload", json!({ "selector": "#file", "files": ["/tmp/browse-read-only-upload.png"] })).await;
+    assert!(refused.contains("browse blocked upload") && refused.contains("read-only"), "{refused}");
+    let refused = h.err("upload", json!({ "selector": "#save", "files": ["/tmp/browse-read-only-upload.png"] })).await;
     assert!(refused.contains("browse blocked upload") && refused.contains("read-only"), "{refused}");
     let refused = h.err("click", json!({ "selector": "#save" })).await;
     assert!(refused.contains("browse blocked click") && refused.contains("read-only"), "{refused}");

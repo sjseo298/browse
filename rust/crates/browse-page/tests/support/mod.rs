@@ -3,14 +3,15 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use browse_core::{Browser, Cdp, CdpError, CdpEvent, HandoffResult, TabId, TabInfo, TabOptions, TabState, ToolContext, ToolOutput};
+use browse_cdp::{Cdp, CdpError, CdpEvent};
+use browse_core::{Browser, HandoffResult, TabDriver, TabId, TabInfo, TabOptions, TabState, ToolContext, ToolOutput};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -175,6 +176,11 @@ pub struct TabCdp {
     pub target: String,
     events: broadcast::Sender<CdpEvent>,
     pub sent: Mutex<Vec<String>>,
+    calls: Mutex<Vec<(String, String, Value)>>,
+    /// Methods that answer with a protocol error, like an extension without file URL access does.
+    refusing: Mutex<HashSet<String>>,
+    /// A path that replaces every DOM.setFileInputFiles path, for a browser that sees another filesystem.
+    rewrite_files: Mutex<Option<(String, bool)>>,
 }
 
 impl TabCdp {
@@ -184,7 +190,7 @@ impl TabCdp {
         let attached = connection.send("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None).await.unwrap();
         let session = attached["sessionId"].as_str().unwrap().to_string();
         let (events, _) = broadcast::channel(4096);
-        let tab = Arc::new(TabCdp { connection: connection.clone(), session: session.clone(), target, events, sent: Mutex::new(Vec::new()) });
+        let tab = Arc::new(TabCdp { connection: connection.clone(), session: session.clone(), target, events, sent: Mutex::new(Vec::new()), calls: Mutex::new(Vec::new()), refusing: Mutex::new(HashSet::new()), rewrite_files: Mutex::new(None) });
         let mut rx = connection.events.subscribe();
         let forward = tab.events.clone();
         let root = session.clone();
@@ -210,13 +216,46 @@ impl TabCdp {
     pub fn methods(&self) -> Vec<String> {
         self.sent.lock().unwrap().clone()
     }
+
+    /// Every command with the session it went to and the parameters it was sent, in order.
+    pub fn calls(&self) -> Vec<(String, String, Value)> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// Makes `method` answer with a protocol error, as an extension without file URL access does for
+    /// DOM.setFileInputFiles.
+    pub fn refuse(&self, method: &str) {
+        self.refusing.lock().unwrap().insert(method.to_string());
+    }
+
+    /// Makes DOM.setFileInputFiles set this path instead of the ones it was given, for a browser whose filesystem
+    /// doesn't have them.
+    pub fn rewrite_files_to(&self, path: &str) {
+        *self.rewrite_files.lock().unwrap() = Some((path.to_string(), false));
+    }
+
+    /// The same, but the sentinel file the probe writes keeps its path, so only the real files look wrong.
+    pub fn rewrite_files_except_sentinel_to(&self, path: &str) {
+        *self.rewrite_files.lock().unwrap() = Some((path.to_string(), true));
+    }
 }
 
 #[async_trait]
 impl Cdp for TabCdp {
-    async fn send(&self, method: &str, params: Value, session_id: Option<&str>) -> Result<Value, CdpError> {
+    async fn send(&self, method: &str, mut params: Value, session_id: Option<&str>) -> Result<Value, CdpError> {
         self.sent.lock().unwrap().push(method.to_string());
+        if self.refusing.lock().unwrap().contains(method) {
+            return Err(CdpError::Protocol(format!("{method}: Not allowed")));
+        }
+        if method == "DOM.setFileInputFiles"
+            && let Some((path, keep_sentinel)) = self.rewrite_files.lock().unwrap().clone() {
+                let sentinel = params["files"][0].as_str().is_some_and(|file| std::path::Path::new(file).file_name().is_some_and(|name| name == std::ffi::OsStr::new("sentinel")));
+                if !(keep_sentinel && sentinel) {
+                    params["files"] = json!([path]);
+                }
+            }
         let session = session_id.unwrap_or(&self.session);
+        self.calls.lock().unwrap().push((method.to_string(), session.to_string(), params.clone()));
         self.connection.send(method, params, Some(session)).await.map_err(CdpError::Protocol)
     }
 
@@ -228,8 +267,10 @@ impl Cdp for TabCdp {
 /// One Chromium tab as the browser: tab 1.
 pub struct FakeBrowser {
     pub tab: Arc<TabCdp>,
+    pub driver: Arc<dyn TabDriver>,
     pub human: bool,
     pub read_only: bool,
+    pub connected_locally: bool,
     pub state: Arc<TabState>,
 }
 
@@ -248,14 +289,15 @@ impl Browser for FakeBrowser {
             chosen: None,
             last_used: None,
             busy: false,
+            handoff: None,
             options: TabOptions { read_only: self.read_only, ..TabOptions::default() },
         }])
     }
     async fn close_tab(&self, _tab: TabId) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn cdp(&self, _tab: TabId) -> anyhow::Result<Arc<dyn Cdp>> {
-        Ok(self.tab.clone())
+    async fn tab_driver(&self, _tab: TabId) -> anyhow::Result<Arc<dyn TabDriver>> {
+        Ok(self.driver.clone())
     }
     async fn state(&self, _tab: TabId) -> anyhow::Result<Arc<TabState>> {
         Ok(self.state.clone())
@@ -265,6 +307,9 @@ impl Browser for FakeBrowser {
     }
     async fn human_input(&self, _tab: TabId) -> bool {
         self.human
+    }
+    async fn connected_locally(&self, _tab: TabId) -> bool {
+        self.connected_locally
     }
     async fn read_only(&self, _tab: TabId) -> bool {
         self.read_only
@@ -282,23 +327,32 @@ pub struct Harness {
     pub files: TempDir,
 }
 
+/// Serializes tests that upload, so a test can check the probe's temporary folders left nothing behind.
+pub static UPLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 impl Harness {
     pub async fn start(human: bool) -> Option<Harness> {
-        Self::start_with(human, false).await
+        Self::start_with(human, false, true).await
+    }
+
+    /// A harness whose browser is on another machine, so uploads copy the files' bytes into the page.
+    pub async fn start_elsewhere(human: bool) -> Option<Harness> {
+        Self::start_with(human, false, false).await
     }
 
     /// A harness whose tab reports `readOnly` to the tools.
     pub async fn start_read_only(human: bool) -> Option<Harness> {
-        Self::start_with(human, true).await
+        Self::start_with(human, true, true).await
     }
 
-    async fn start_with(human: bool, read_only: bool) -> Option<Harness> {
+    async fn start_with(human: bool, read_only: bool, connected_locally: bool) -> Option<Harness> {
         let chrome = launch().await?;
         let connection = Connection::connect(&chrome.ws).await;
         let tab = TabCdp::open(&connection).await;
         let files = TempDir::new("files");
         let state = Arc::new(TabState::default());
-        let ctx = ToolContext { browser: Arc::new(FakeBrowser { tab: tab.clone(), human, read_only, state: state.clone() }), file_roots: vec![files.0.clone()] };
+        let driver: Arc<dyn TabDriver> = browse_cdp::CdpTabDriver::new(tab.clone());
+        let ctx = ToolContext { browser: Arc::new(FakeBrowser { tab: tab.clone(), driver, human, read_only, connected_locally, state: state.clone() }), file_roots: vec![files.0.clone()] };
         let server = Server::start().await;
         Some(Harness { chrome, tab, ctx, tools: browse_page::tools(), state, server, files })
     }

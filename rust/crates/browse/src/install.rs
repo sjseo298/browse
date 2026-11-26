@@ -34,6 +34,8 @@ struct Flags {
     remote: bool,
     port: Option<u16>,
     label: Option<String>,
+    /// Connect a Firefox-family browser instead of the Chrome extension.
+    firefox: bool,
     opencode: Option<PathBuf>,
 }
 
@@ -81,6 +83,7 @@ fn parse(args: &[String]) -> anyhow::Result<Flags> {
                 flags.port = Some(port);
             }
             "--label" => flags.label = Some(value(arg)?),
+            "--firefox" => flags.firefox = true,
             "--wait-seconds" => {
                 let seconds = value(arg)?.parse::<u64>().ok().filter(|s| (1..=3600).contains(s)).context("--wait-seconds must be between 1 and 3600")?;
                 flags.wait_seconds = Some(seconds);
@@ -91,6 +94,9 @@ fn parse(args: &[String]) -> anyhow::Result<Flags> {
     }
     if flags.none && (flags.all || !flags.requested.is_empty()) {
         bail!("--agent none can't be combined with agent names");
+    }
+    if flags.remote && flags.firefox {
+        bail!("--remote pairs a browser on another computer; --firefox connects one on this computer. Pick one.");
     }
     Ok(flags)
 }
@@ -325,6 +331,9 @@ pub fn install(args: &[String]) -> anyhow::Result<i32> {
         let _ = remote::set_port(Some(port))?;
         println!("✓ Configured relay port {port}");
     }
+    // A pinned relay port goes in every entry, so an agent that starts the server with a bare environment still dials
+    // the relay the extension is paired with.
+    let port = flags.port.or_else(browse_relay::port::env_port);
     restart_outdated_relay();
 
     let opencode = flags.opencode.clone().or_else(|| std::env::var_os("OPENCODE_BIN").map(PathBuf::from)).or_else(|| browsers::on_path("opencode"));
@@ -361,7 +370,7 @@ pub fn install(args: &[String]) -> anyhow::Result<i32> {
         let label = agents::label(location.name);
         let file = tilde(&location.file);
         if location.name == "opencode" {
-            match setup::configure_opencode_with_port(&location.file, &entry, flags.port) {
+            match setup::configure_opencode(&location.file, &entry, port) {
                 Ok(McpEdit::Added) => println!("✓ Added browse to {label} ({file})"),
                 Ok(McpEdit::Updated) => println!("✓ Updated browse in {label} ({file})"),
                 Ok(McpEdit::UpToDate) => println!("✓ {label} already has browse"),
@@ -379,7 +388,7 @@ pub fn install(args: &[String]) -> anyhow::Result<i32> {
             }
             continue;
         }
-        match agents::edit(location, &command, false) {
+        match agents::edit(location, &command, false, port) {
             Ok(Edit::Added) => println!("✓ Added browse to {label} ({file})"),
             Ok(Edit::Updated) => println!("✓ Updated browse in {label} ({file})"),
             Ok(Edit::Unchanged | Edit::Removed) => println!("✓ {label} already has browse"),
@@ -398,7 +407,7 @@ pub fn install(args: &[String]) -> anyhow::Result<i32> {
     if selected.is_empty() {
         let intro = if flags.none || ask { "Add browse to your agent as an MCP server (stdio):" } else { "No agent was set up: couldn't tell which agent is running this, and OpenCode isn't installed. Add browse to your agent as an MCP server (stdio):" };
         println!("\n{intro}");
-        for line in agents::manual_entry(&command).lines() {
+        for line in agents::manual_entry(&command, port).lines() {
             println!("  {line}");
         }
         if !flags.none && !ask {
@@ -429,8 +438,13 @@ pub fn install(args: &[String]) -> anyhow::Result<i32> {
     if flags.remote {
         return Ok(status.max(remote::install(agent, flags.label.as_deref())?));
     }
-    let seconds = flags.wait_seconds.unwrap_or(if tty { 180 } else { 90 });
-    let connected = setup::connect_extension(!flags.no_open, !flags.no_wait, Duration::from_secs(seconds))?;
+    let firefox = flags.firefox || choose_browser(tty)?;
+    let connected = if firefox {
+        crate::firefox::connect(&crate::firefox::Options::default())?
+    } else {
+        let seconds = flags.wait_seconds.unwrap_or(if tty { 180 } else { 90 });
+        setup::connect_extension(!flags.no_open, !flags.no_wait, Duration::from_secs(seconds))?
+    };
     if tty && !selected.is_empty() && connected == 0 {
         match selected.as_slice() {
             [one] => println!("If {} was already running, restart it so it loads browse.", agents::label(one)),
@@ -441,13 +455,39 @@ pub fn install(args: &[String]) -> anyhow::Result<i32> {
     Ok(status.max(connected))
 }
 
+/// With no Chromium browser that has the extension and a Firefox-family browser installed, a person at a terminal
+/// picks which to connect; anyone else gets the Chrome flow and a pointer to `browse firefox`.
+fn choose_browser(tty: bool) -> anyhow::Result<bool> {
+    let apps = browse_relay::firefox::apps();
+    if apps.is_empty() || relay::extension_status(false).is_some_and(|s| s["connected"] == true || s["pairingState"] == "paired-offline") {
+        return Ok(false);
+    }
+    if !browsers::detect(&browsers::browsers()).is_empty() {
+        return Ok(false);
+    }
+    let names = crate::firefox::installed_names().join(", ");
+    if !tty {
+        println!("{names} is installed too: `browse firefox` connects it instead of the Chrome extension.");
+        return Ok(false);
+    }
+    print!("Connect which browser? [c]hrome-family browser with the browse extension / [f]irefox-family ({names}): ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
+    Ok(line.trim().to_lowercase().starts_with('f'))
+}
+
 /// `browse uninstall`: removes browse from every agent config where an install put it, stops the relay, and deletes
 /// the executable this install placed and browse's files. A package manager's install is left to that manager.
 pub fn uninstall(args: &[String]) -> anyhow::Result<i32> {
     if let Some(other) = args.first() {
         bail!("Unknown option {other} for uninstall. Run `browse --help`.");
     }
-    let mut status = 0;
+    let paths = relay_api::paths();
+    // Only a browser that was paired (or connected through the extension) has an extension to remove.
+    let paired = !browse_relay::pairing::read_browser_pairings(&paths).is_empty()
+        || browse_relay::paths::read_json::<serde_json::Map<String, Value>>(&paths.browsers()).is_some_and(|known| known.keys().any(|key| !key.starts_with("driver:")));
+    let mut status = crate::firefox::uninstall();
     match relay::stop() {
         Ok(true) => println!("✓ Stopped the relay"),
         Ok(false) => {}
@@ -480,7 +520,7 @@ pub fn uninstall(args: &[String]) -> anyhow::Result<i32> {
     let placeholder = ["browse".to_owned(), "mcp".to_owned()];
     for location in &locations {
         let label = agents::label(location.name);
-        match agents::edit(location, &placeholder, true) {
+        match agents::edit(location, &placeholder, true, None) {
             Ok(Edit::Removed) => println!("✓ Removed browse from {label} ({})", tilde(&location.file)),
             Ok(Edit::Conflict) => println!("! {} has a server named browse that browse didn't write; left it unchanged.", tilde(&location.file)),
             Ok(_) => {}
@@ -530,7 +570,9 @@ pub fn uninstall(args: &[String]) -> anyhow::Result<i32> {
         };
         println!("browse itself is still installed with {}: run `{words}` to remove it.", global.manager.name());
     }
-    println!("Remove the browse extension from your browser to finish (chrome://extensions).");
+    if paired {
+        println!("Remove the browse extension from your browser to finish (chrome://extensions).");
+    }
     Ok(status)
 }
 
@@ -557,6 +599,9 @@ mod tests {
         assert!(parse(&args(&["--agent", "*"])).unwrap().all);
         assert!(parse(&args(&["--agent", "none"])).unwrap().none);
         assert_eq!(parse(&args(&["--wait-seconds", "5"])).unwrap().wait_seconds, Some(5));
+        assert!(parse(&args(&["--firefox"])).unwrap().firefox);
+        assert!(parse(&args(&["--firefox", "--remote"])).is_err());
+        assert!(parse(&args(&["--zen"])).is_err());
     }
 
     #[test]

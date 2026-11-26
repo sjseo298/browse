@@ -89,12 +89,31 @@ impl Drop for PendingHandoff {
     }
 }
 
+/// Takes a direct tab's handoff card down when its handoff ends, however it ends.
+struct CardGuard {
+    driver: Arc<dyn browse_core::TabDriver>,
+    id: String,
+}
+
+impl Drop for CardGuard {
+    fn drop(&mut self) {
+        let driver = self.driver.clone();
+        let id = self.id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = tokio::time::timeout(Duration::from_secs(2), crate::handoff_card::remove(driver, &id)).await;
+            });
+        }
+    }
+}
+
 impl Relay {
     /// Brings what the extension shows for the tab up to date; `regroup` resends its group even when unchanged.
     pub fn refresh_presentation(self: &Arc<Self>, tab: i64, regroup: bool) {
         let start = {
             let mut st = self.st();
-            if !st.tabs.contains_key(&tab) {
+            // A direct tab has no extension to show a status, badge or group.
+            if st.tabs.get(&tab).is_none_or(|t| t.backend.is_direct()) {
                 return;
             }
             let presented = st.presented.entry(tab).or_default();
@@ -239,7 +258,7 @@ impl Relay {
             let mut st = self.st();
             let busy = st.tab_busy(tab);
             match st.tabs.get_mut(&tab) {
-                Some(entry) if busy && !entry.focused => {
+                Some(entry) if busy && !entry.focused && !entry.backend.is_direct() => {
                     entry.focused = true;
                     true
                 }
@@ -274,6 +293,9 @@ impl Relay {
     pub async fn run_handoff(self: &Arc<Self>, tab: i64, message: &str, timeout: Duration) -> anyhow::Result<HandoffResult> {
         let message = message.trim();
         let message = if message.is_empty() { "Finish this step in the tab, then click Continue" } else { message };
+        if self.is_direct_tab(tab) {
+            return self.run_direct_handoff(tab, message, timeout).await;
+        }
         let (done, outcome) = oneshot::channel();
         let id = crate::util::random_hex(16);
         let status = {
@@ -321,6 +343,56 @@ impl Relay {
         Ok(HandoffResult { outcome: outcome.to_string(), note: None })
     }
 
+    /// A handoff in a directly driven tab: the card is the page's own, drawn by browse's isolated world in a closed
+    /// shadow root, and only a real click on it (checked where it lands) counts. The handoff record is the same as the
+    /// extension's, so listing, cancelling and holding back agent input work alike.
+    async fn run_direct_handoff(self: &Arc<Self>, tab: i64, message: &str, timeout: Duration) -> anyhow::Result<HandoffResult> {
+        let (done, outcome) = oneshot::channel();
+        let id = crate::util::random_hex(16);
+        let raw = {
+            let mut st = self.st();
+            let Some(entry) = st.tabs.get(&tab) else { bail!("Tab {tab} isn't attached") };
+            let Some(raw) = entry.raw_driver.clone() else { bail!("Tab {tab} lost its browser driver") };
+            let target_id = entry.target_id.clone();
+            if let Some(mut previous) = st.handoffs.remove(&tab) {
+                previous.done.take().map(|d| d.send("cancelled"));
+            }
+            st.handoffs.insert(
+                tab,
+                Handoff {
+                    id: id.clone(),
+                    tab,
+                    target_id,
+                    message: message.to_string(),
+                    started_at: crate::util::now_iso(),
+                    pid: crate::serve::CLIENT.try_with(|pid| *pid).ok().flatten(),
+                    done: Some(done),
+                },
+            );
+            raw
+        };
+        rlog!("handoff.started", tabId = tab, direct = true);
+        let mut pending = PendingHandoff { relay: self.clone(), id: id.clone(), tab, armed: true };
+        let _card = CardGuard { driver: raw.clone(), id: id.clone() };
+        let deadline = crate::util::now_ms() + timeout.as_millis() as u64;
+        let shown = tokio::select! {
+            outcome = outcome => Ok(outcome.unwrap_or("cancelled")),
+            clicked = crate::handoff_card::run(raw.clone(), &id, message, deadline) => clicked,
+            _ = tokio::time::sleep(timeout) => Ok("timeout"),
+        };
+        let outcome = match shown {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                drop(pending);
+                bail!("Couldn't show the handoff in tab {tab}: {error}");
+            }
+        };
+        pending.done();
+        self.finish_handoff_id(tab, &id, outcome);
+        rlog!("handoff.finished", tabId = tab, outcome = outcome);
+        Ok(HandoffResult { outcome: outcome.to_string(), note: None })
+    }
+
     fn finish_handoff_id(&self, tab: i64, id: &str, outcome: &'static str) {
         let mut st = self.st();
         if st.handoffs.get(&tab).is_some_and(|h| h.id == id)
@@ -345,6 +417,44 @@ impl Relay {
             handoff.done.take().map(|d| d.send(outcome));
         }
         self.refresh_presentation(tab, false);
+    }
+
+    /// Brings a tab with a handoff waiting on the user to the front: the tab selected and its window raised, as a
+    /// click on browse's handoff notification does. `tab` None picks the only waiting one. Only a waiting handoff's
+    /// tab: the agent already asked for the user there, so this doesn't let an agent take the user's focus.
+    /// Errors are for the user, with an HTTP status (404 nothing waiting there, 409 more than one waiting, 422 a
+    /// tab browse can't raise).
+    pub async fn show_handoff_tab(self: &Arc<Self>, tab: Option<i64>) -> Result<Value, (u16, String)> {
+        let (tab, url, handoff) = {
+            let st = self.st();
+            let tab = match tab {
+                Some(tab) if st.handoffs.contains_key(&tab) => tab,
+                Some(tab) => return Err((404, format!("Tab {tab} isn't waiting on you: only a tab with a handoff waiting can be brought to the front"))),
+                None => {
+                    let mut waiting: Vec<i64> = st.handoffs.keys().copied().collect();
+                    waiting.sort_unstable();
+                    match waiting.as_slice() {
+                        [] => return Err((404, "No tab is waiting on you".into())),
+                        [tab] => *tab,
+                        tabs => {
+                            let list = tabs.iter().map(i64::to_string).collect::<Vec<_>>().join(", ");
+                            return Err((409, format!("Tabs {list} are waiting on you; name one")));
+                        }
+                    }
+                }
+            };
+            let handoff = st.handoffs.get(&tab).map(Handoff::info);
+            (tab, st.tabs.get(&tab).map(|t| t.url.clone()).unwrap_or_default(), handoff)
+        };
+        if self.is_direct_tab(tab) {
+            return Err((422, format!("Tab {tab} is in a browser browse drives directly, which can't be brought to the front from here; switch to it in that browser")));
+        }
+        // The relay's own command, not an agent's: the guardrail on agents' Page.bringToFront doesn't apply.
+        if let Err(error) = self.debugger(tab, None, "Page.bringToFront", json!({}), Some(Duration::from_secs(5))).await {
+            return Err((502, format!("Couldn't bring tab {tab} to the front: {error}")));
+        }
+        rlog!("handoff.shown", tabId = tab);
+        Ok(json!({ "tab": tab, "url": url, "handoff": handoff }))
     }
 
     /// The page's Continue button (`handoff.completed`): only the waiter named by its id and tab.
